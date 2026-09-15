@@ -149,10 +149,14 @@ func parseBalance(b []byte) (Balance, error) {
 			continue
 		}
 		if m := balanceRow.FindStringSubmatch(l); len(m) == 2 {
+			tag := strings.TrimSpace(m[1])
+			if tag == "" {
+				continue
+			}
 			if section == "override" {
-				r.Override = m[1]
+				r.Override = tag
 			} else if section == "selects" {
-				r.Selected = append(r.Selected, m[1])
+				r.Selected = append(r.Selected, tag)
 			}
 		}
 	}

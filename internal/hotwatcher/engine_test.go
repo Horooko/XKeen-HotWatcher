@@ -350,6 +350,32 @@ func TestInvalidSelectorBlocksMigration(t *testing.T) {
 		t.Fatal("incompatible balancer accepted")
 	}
 }
+func TestAdoptWithXrayJSONCInUnrelatedDNSFragment(t *testing.T) {
+	e, _, _ := setupEngine(t)
+	path := filepath.Join(e.C.ConfigDir, "02_dns.json")
+	if err := os.WriteFile(path, []byte("{\n  // Xray allows comments in DNS fragments.\n  \"dns\": {\"servers\": [\"localhost\"]}\n}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Sync(true); err != nil {
+		t.Fatal(err)
+	}
+}
+func TestMalformedRoutingFragmentStillBlocksMigration(t *testing.T) {
+	e, r, _ := setupEngine(t)
+	path := filepath.Join(e.C.ConfigDir, "05_routing.json")
+	if err := os.WriteFile(path, []byte("{\"routing\": {\"balancers\": [}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Sync(true); err == nil || len(r.adds) != 0 {
+		t.Fatal("malformed routing fragment accepted")
+	}
+}
+func TestBlankBalancerOverrideIsNotAnOutbound(t *testing.T) {
+	b, err := parseBalance([]byte("  - Selecting Override:\n    1   \n  - Selects:\n    1   main--VL FI\n"))
+	if err != nil || b.Override != "" || len(b.Selected) != 1 || b.Selected[0] != "main--VL FI" {
+		t.Fatal("blank API row was treated as an outbound")
+	}
+}
 func TestPreferredAndStickyChoice(t *testing.T) {
 	n := []Node{{Tag: "one", Name: "Germany", Identity: "de"}, {Tag: "two", Name: "Finland", Identity: "fi"}}
 	if choose(n, "one", "", "Finland") != "one" || choose(n, "old", "fi", "") != "two" || choose(n, "old", "", "finland") != "two" {

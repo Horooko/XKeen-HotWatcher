@@ -1,6 +1,7 @@
 package hotwatcher
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -602,7 +603,12 @@ func checkSelector(c Config) error {
 			} `json:"routing"`
 		}
 		if json.Unmarshal(b, &v) != nil {
-			return errors.New("local config fragments must be strict JSON for safety checks")
+			// Xray accepts JSONC/JSON5 in unrelated fragments (such as DNS).
+			// Only routing fragments need strict parsing to verify the selector.
+			if !strings.Contains(strings.ToLower(f.Name()), "routing") && !bytes.Contains(b, []byte(`"balancers"`)) {
+				continue
+			}
+			return fmt.Errorf("routing fragment %s must be strict JSON to verify balancer selector", f.Name())
 		}
 		for _, bal := range v.Routing.Balancers {
 			if bal.Tag != c.BalancerTag {
