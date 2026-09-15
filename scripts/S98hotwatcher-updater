@@ -1,0 +1,45 @@
+#!/bin/sh
+# Runs before S99hotwatcher at boot. Never controls Xray.
+BIN=/opt/sbin/hotwatcher-updater
+PIDFILE=/opt/var/run/hotwatcher-updater.pid
+STARTFILE=/opt/var/run/hotwatcher-updater.starttime
+running() {
+ [ -r "$PIDFILE" ] && [ -r "$STARTFILE" ] || return 1
+ PID=$(cat "$PIDFILE")
+ case "$PID" in ''|*[!0-9]*) return 1;; esac
+ [ -d "/proc/$PID" ] || return 1
+ [ "$(readlink "/proc/$PID/exe" 2>/dev/null)" = "$BIN" ] || return 1
+ [ "$(cat "$STARTFILE")" = "$(awk '{print $22}' "/proc/$PID/stat" 2>/dev/null)" ] || return 1
+ tr '\000' '\n' < "/proc/$PID/cmdline" | grep -q '^run$'
+}
+start() {
+ [ -x "$BIN" ] || return 0
+ "$BIN" recover || return 1
+ [ -f /opt/etc/hotwatcher/update-enabled ] || return 0
+ if running; then return 0; fi
+ if [ -r "$PIDFILE" ]; then
+  PID=$(cat "$PIDFILE")
+  case "$PID" in ''|*[!0-9]*) return 1;; esac
+  if kill -0 "$PID" 2>/dev/null; then echo 'Unverified updater PID; start deferred.' >&2; return 1; fi
+  rm -f "$PIDFILE" "$STARTFILE"
+ fi
+ mkdir -p /opt/var/run
+ umask 077
+ "$BIN" run >/dev/null 2>&1 &
+ echo "$!" > "$PIDFILE"
+ awk '{print $22}' "/proc/$(cat "$PIDFILE")/stat" > "$STARTFILE"
+}
+stop() {
+ if ! running; then
+  [ -r "$PIDFILE" ] || return 0
+  PID=$(cat "$PIDFILE")
+  case "$PID" in ''|*[!0-9]*) return 1;; esac
+  if kill -0 "$PID" 2>/dev/null; then echo 'Unverified updater PID; stop deferred.' >&2; return 1; fi
+  rm -f "$PIDFILE" "$STARTFILE";return 0
+ fi
+ kill -TERM "$PID"
+ rm -f "$PIDFILE" "$STARTFILE"
+}
+case "${1:-}" in
+ start) start;; stop) stop;; restart) stop && start;; status) [ -r "$PIDFILE" ] && echo "Updater PID: $(cat "$PIDFILE")";; *) echo "Usage: $0 {start|stop|restart|status}";exit 1;;
+esac

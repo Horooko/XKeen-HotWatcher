@@ -1,0 +1,7 @@
+# Проверка software updater, 15 сентября 2026
+
+Проверено в Linux Docker container `golang:1.27` (Go 1.27.1, amd64), без реального роутера и без production Xray. `go test ./...`, `go vet ./...`, статические arm64/amd64 build и `sh -n` для трёх install/init scripts проходят. Тесты updater проверяют Ed25519 и подмену manifest, чужой repository ID, SemVer patch/minor/prerelease, duplicate JSON keys, чужой asset URL и восстановление предыдущего бинарника из interrupted journal. Локальный release smoke собрал arm64/amd64 binaries, создал manifest, подписал его локальным seed и проверил закреплённым публичным ключом.
+
+Код updater не содержит вызовов `xkeen`, управления Xray, netfilter, nftables или iptables. При применении снимок основного Xray сравнивается по PID/starttime/executable/хешу аргументов; защищённые файлы подписки сравниваются по хешам. Проверки релизов используют ETag-cache и backoff с jitter, а установка и изменение update policy сериализуются через `update.lock`. Это статическая и fixture-проверка. На Entware ARM64 ещё не выполнены: остановка длинной подписочной операции, readiness/rollback после реального запуска, power-loss на каждой фазе, идентичность production Xray, сетевые TCP/UDP сессии и Destiny 2. Эти результаты нельзя выводить из контейнерных тестов.
+
+Опубликованный подписанный GitHub Release и GitHub environment secret пока не созданы; автоматическая установка начнёт работать после их настройки и ручного bootstrap с 0.1.0. Переход в `mode=auto` должен быть явным действием администратора.
