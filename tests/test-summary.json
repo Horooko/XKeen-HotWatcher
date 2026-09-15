@@ -1,0 +1,12 @@
+{
+  "date": "2026-09-15",
+  "passed_including_subtests": 54,
+  "skipped": 1,
+  "failed": 0,
+  "real_xray_test_executed": false,
+  "router_test_executed": false,
+  "coverage_output": [
+    "ok  \tlocal/xkeen-hot-watcher/cmd/hotwatcher\t1.090s\tcoverage: 62.0% of statements",
+    "ok  \tlocal/xkeen-hot-watcher/internal/hotwatcher\t9.495s\tcoverage: 68.9% of statements"
+  ]
+}

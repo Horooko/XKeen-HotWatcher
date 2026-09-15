@@ -1,0 +1,7 @@
+/dist/hotwatcher-linux-*
+*.test
+coverage.out
+subscription.url
+state.json
+pending.json
+*.log

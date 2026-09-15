@@ -1,0 +1,2 @@
+# FICTIONAL EXAMPLE ONLY. This is NOT a usable server or working key.
+vless://00000000-0000-4000-8000-000000000001@node.example.invalid:443?encryption=none&type=tcp&security=reality&sni=example.invalid&fp=firefox&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sid=abcd&flow=xtls-rprx-vision#EXAMPLE-FICTIONAL

@@ -1,0 +1,26 @@
+{
+  "xray_asset_dir": "/opt/etc/xray/dat",
+  "subscription_url_file": "/opt/etc/hotwatcher/subscription.url",
+  "xray_binary": "/opt/sbin/xray",
+  "api_address": "127.0.0.1:10085",
+  "balancer_tag": "proxy",
+  "xray_config_dir": "/opt/etc/xray/configs",
+  "generated_file": "04_outbounds.main.json",
+  "state_dir": "/opt/var/lib/hotwatcher",
+  "probe_urls": [
+    "https://www.gstatic.com/generate_204"
+  ],
+  "probe_timeout_seconds": 12,
+  "http_timeout_seconds": 30,
+  "api_timeout_seconds": 10,
+  "interval_seconds": 1800,
+  "reconcile_seconds": 60,
+  "grace_seconds": 1800,
+  "automatic_gc": false,
+  "max_nodes": 64,
+  "max_retired": 128,
+  "preferred_name_contains": "",
+  "ca_file": "",
+  "allow_tls_nodes": false,
+  "allow_loopback_http_for_tests": false
+}

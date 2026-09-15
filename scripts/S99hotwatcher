@@ -1,0 +1,43 @@
+#!/bin/sh
+# Entware init script. Manages ONLY Hot Watcher, never production Xray.
+BIN=/opt/sbin/hotwatcher
+CONF=/opt/etc/hotwatcher/config.json
+ENABLED=/opt/etc/hotwatcher/enabled
+PIDFILE=/opt/var/run/hotwatcher.pid
+PATH=/opt/sbin:/opt/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+running() {
+ [ -r "$PIDFILE" ] || return 1
+ PID=$(cat "$PIDFILE")
+ case "$PID" in ''|*[!0-9]*) return 1 ;; esac
+ [ -d "/proc/$PID" ] || return 1
+ EXE=$(readlink "/proc/$PID/exe" 2>/dev/null) || return 1
+ case "$EXE" in "$BIN"|"$BIN (deleted)") ;; *) return 1 ;; esac
+ tr '\000' '\n' < "/proc/$PID/cmdline" | grep -q '^daemon$'
+}
+start() {
+ [ -f "$ENABLED" ] || { echo 'Hot Watcher disabled (no enabled marker).'; return 0; }
+ if running; then echo "Hot Watcher already running: $PID"; return 0; fi
+ mkdir -p /opt/var/run
+ umask 077
+ "$BIN" --config "$CONF" daemon >/dev/null 2>&1 &
+ PID=$!
+ printf '%s\n' "$PID" > "$PIDFILE"
+ echo "Hot Watcher started: $PID. Check hotwatcher status and events.jsonl."
+}
+stop() {
+ if ! running; then echo 'Hot Watcher not running.'; return 0; fi
+ kill -TERM "$PID" || return 1
+ N=0
+ while running && [ "$N" -lt 30 ]; do sleep 1; N=$((N+1)); done
+ if running; then echo 'Current transaction is still finishing; process was NOT force-killed.'; return 1; fi
+ rm -f "$PIDFILE"
+ echo 'Hot Watcher stopped. Xray was not stopped.'
+}
+case "${1:-}" in
+ start) start ;;
+ stop) stop ;;
+ restart) stop && start ;;
+ status) if running; then echo "Hot Watcher PID: $PID"; else echo 'Hot Watcher not running.'; fi ;;
+ *) echo "Usage: $0 {start|stop|restart|status}"; exit 1 ;;
+esac

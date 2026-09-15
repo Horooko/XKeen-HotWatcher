@@ -1,0 +1,12 @@
+XKeen Hot Watcher 0.1.0
+Build date: 2026-09-15
+Compiler available in build environment: go version go1.23.2 linux/amd64
+Module: local/xkeen-hot-watcher
+Targets: linux/arm64 (GOARM64=v8.0), linux/amd64
+CGO_ENABLED=0; -trimpath; -ldflags="-s -w"
+External Go modules: none
+Bundled Xray binary: none
+Native execution verified: linux/amd64 version + config-example
+ARM64 binary: cross-compiled, ELF architecture checked; not run on target router
+Use a maintained Go toolchain for your own deployment rebuilds.
+This is not a signed upstream XKeen/XTLS release.
