@@ -34,6 +34,11 @@ func Command(args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), deadline)
 	defer cancel()
 	switch args[0] {
+	case "repair-state":
+		if len(args) != 2 {
+			return errors.New("repair-state requires the package version")
+		}
+		return RepairOfflineBootstrap(args[1])
 	case "status":
 		hash, _ := hashFile(Binary)
 		j, _ := readJournal()

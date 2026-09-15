@@ -11,16 +11,39 @@
 
 `enable --notify` оставляет только проверки. `disable` прекращает проверки программы, `pause on|off` откладывает её замену, `pin VERSION` ограничивает выбранную версию. `hold on` из Hot Watcher также откладывает установку. Эти действия не отменяют расписание подписки. Команды `check`, `download` и `apply` соответственно проверяют доступность, скачивают проверенный asset и выполняют замену. `apply` повторяет все проверки; обхода подписи нет.
 
-Для уже установленной и запущенной `v0.2.4` после успешной публикации подписанного
-Release `v0.2.5` выполните в Entware shell:
+Установленный updater `v0.2.4` отклоняет обычные поля `url` в ответе GitHub Releases.
+Если `hotwatcher update status` работает, а `hotwatcher update check` отвечает
+`json: unknown field "url"`, обычный `apply` тоже остановится до скачивания.
+После объединения изменений и публикации подписанного `v0.2.5` выполните
+одноразовый bootstrap-ремонт: распакуйте архив из GitHub Release в
+`/opt/tmp/xkeen-hot-watcher`, затем выполните:
+
+```sh
+cd /opt/tmp/xkeen-hot-watcher
+sh scripts/repair-updater.sh
+/opt/sbin/hotwatcher update status
+/opt/sbin/hotwatcher update check
+/opt/sbin/hotwatcher url migrate
+xkeen -xtest
+/opt/sbin/hotwatcher sync
+/opt/sbin/hotwatcher keys
+```
+
+Скрипт проверяет `dist/SHA256SUMS` из пакета, сохраняет старые бинарники для отката,
+заменяет Hot Watcher и updater и перезапускает только их службы. Xray не трогается.
+Этот разовый путь доверяет скачанному с GitHub архиву как при первоначальном
+`install.sh`; подписанный manifest отдельно проверяется обычным updater при
+последующих обновлениях. Если `update status` тоже выдаёт `unknown field "url"`,
+сначала исправьте `/opt/etc/hotwatcher/updates.json`: поле `url` ему не принадлежит.
+
+После такого ремонта следующие подписанные patch-релизы устанавливаются обычными
+`update check` и `update apply`:
 
 ```sh
 /opt/sbin/hotwatcher update status
 /opt/sbin/hotwatcher update check
 /opt/sbin/hotwatcher update apply
 /opt/sbin/hotwatcher version --json
-/opt/sbin/hotwatcher url migrate
-/opt/sbin/hotwatcher sync
 /opt/sbin/hotwatcher status
 ```
 

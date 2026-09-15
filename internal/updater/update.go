@@ -95,7 +95,7 @@ func loadConfig() (Config, error) {
 	}
 	e = strictJSON(b, &c)
 	if e != nil {
-		return c, e
+		return c, fmt.Errorf("invalid updater settings %s: %w", ConfigPath, e)
 	}
 	return c, c.Validate()
 }
@@ -287,6 +287,24 @@ func strictJSON(b []byte, v any) error {
 		return errors.New("trailing JSON")
 	}
 	return nil
+}
+
+// GitHub's public release response contains many fields outside our small
+// projection. Keep duplicate-key and trailing-data checks, then decode only
+// the fields needed to locate assets. Signed manifests remain strictJSON.
+func decodeReleases(b []byte) ([]Release, error) {
+	var releases []Release
+	if err := rejectDuplicateKeys(json.NewDecoder(bytes.NewReader(b))); err != nil {
+		return nil, err
+	}
+	d := json.NewDecoder(bytes.NewReader(b))
+	if err := d.Decode(&releases); err != nil {
+		return nil, err
+	}
+	if d.Decode(new(any)) != io.EOF {
+		return nil, errors.New("trailing GitHub releases JSON")
+	}
+	return releases, nil
 }
 func rejectDuplicateKeys(d *json.Decoder) error {
 	t, e := d.Token()
@@ -507,6 +525,50 @@ func eligible(current, candidate, policy string) bool {
 	}
 	return b[1] > a[1] || b[1] == a[1] && b[2] > a[2]
 }
+
+// RepairOfflineBootstrap records an administrator-installed release after the
+// v0.2.4 updater could not parse GitHub's public release response. It cannot
+// lower the rollback high-water mark or accept a version other than this binary.
+func RepairOfflineBootstrap(expected string) error {
+	if expected != hw.Version {
+		return errors.New("offline package version differs from installed Hot Watcher")
+	}
+	v, ok := semver(expected)
+	if !ok || v[1] > 999 || v[2] > 999 {
+		return errors.New("invalid offline package version")
+	}
+	sequence := uint64(v[0])*1000000 + uint64(v[1])*1000 + uint64(v[2])
+	unlock, err := lock()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	if _, err = loadConfig(); err != nil {
+		return err
+	}
+	if _, err = os.Lstat(journalPath()); err == nil {
+		return errors.New("pending software update exists")
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	s := readState()
+	if s.Invalid || s.HighWater > sequence {
+		return errors.New("offline repair would overwrite invalid or newer updater state")
+	}
+	hash, err := hashFile(Binary)
+	if err != nil {
+		return err
+	}
+	if s.Installed != expected {
+		s.Previous = s.Installed
+	}
+	s.Installed, s.InstalledHash, s.HighWater = expected, hash, sequence
+	s.Verified = false // The one-time archive repair did not use signed manifest verification.
+	s.Available, s.Deferred, s.BlockedHash, s.ETag = "", "", "", ""
+	s.Failures = 0
+	s.NextCheck = time.Now().UTC()
+	return save(statePath(), s)
+}
 func verifyManifest(b, sigBytes []byte) (Manifest, error) {
 	var m Manifest
 	key, e := base64.StdEncoding.DecodeString(PublicKeyB64)
@@ -698,9 +760,9 @@ func check(ctx context.Context, c Config, s *State) (Manifest, Release, Asset, e
 		if e != nil {
 			return best, chosen, ba, e
 		}
-		var releases []Release
-		if e = strictJSON(b, &releases); e != nil {
-			return best, chosen, ba, e
+		releases, parseErr := decodeReleases(b)
+		if parseErr != nil {
+			return best, chosen, ba, fmt.Errorf("invalid GitHub Releases response: %w", parseErr)
 		}
 		if len(releases) == 0 {
 			break

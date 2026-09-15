@@ -55,6 +55,60 @@ func TestStrictJSONRejectsDuplicate(t *testing.T) {
 		t.Fatal("duplicate keys accepted")
 	}
 }
+
+func TestGitHubReleasesDecoderAllowsExtraFieldsButRejectsUnsafeJSON(t *testing.T) {
+	b := []byte(`[{"url":"https://api.github.com/repos/Horooko/XKeen-HotWatcher/releases/1","id":1,"tag_name":"v0.2.5","draft":false,"prerelease":false,"author":{"login":"Horooko","url":"https://api.github.com/users/Horooko"},"assets":[{"id":2,"name":"release-manifest.json","url":"https://api.github.com/repos/Horooko/XKeen-HotWatcher/releases/assets/2","browser_download_url":"https://github.com/Horooko/XKeen-HotWatcher/releases/download/v0.2.5/release-manifest.json"}]}]`)
+	releases, err := decodeReleases(b)
+	if err != nil || len(releases) != 1 || releases[0].TagName != "v0.2.5" {
+		t.Fatal("realistic GitHub response rejected", err)
+	}
+	if _, err = releaseAsset(releases[0], "release-manifest.json"); err != nil {
+		t.Fatal("asset URL not read from browser_download_url", err)
+	}
+	for _, bad := range [][]byte{[]byte(`[{"id":1,"id":2}]`), append(append([]byte{}, b...), []byte(` true`)...)} {
+		if _, err = decodeReleases(bad); err == nil {
+			t.Fatal("unsafe GitHub JSON accepted")
+		}
+	}
+	var strict []Release
+	if err = strictJSON(b, &strict); err == nil {
+		t.Fatal("signed data decoder unexpectedly became permissive")
+	}
+}
+
+func TestOfflineRepairRecordsBinaryAndPreservesHighWater(t *testing.T) {
+	oldRoot, oldBinary, oldConfig := Root, Binary, ConfigPath
+	Root = t.TempDir()
+	if err := os.Chmod(Root, 0700); err != nil {
+		t.Fatal(err)
+	}
+	Binary = filepath.Join(Root, "hotwatcher")
+	ConfigPath = filepath.Join(Root, "updates.json")
+	defer func() { Root, Binary, ConfigPath = oldRoot, oldBinary, oldConfig }()
+	if err := os.WriteFile(Binary, []byte("candidate-v0.2.5"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := save(ConfigPath, Defaults()); err != nil {
+		t.Fatal(err)
+	}
+	if err := save(statePath(), State{Installed: "0.2.4", InstalledHash: "old", HighWater: 2004, Verified: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := RepairOfflineBootstrap("0.2.5"); err != nil {
+		t.Fatal(err)
+	}
+	s := readState()
+	hash, _ := hashFile(Binary)
+	if s.Invalid || s.Installed != "0.2.5" || s.Previous != "0.2.4" || s.InstalledHash != hash || s.HighWater != 2005 || s.Verified {
+		t.Fatal("offline repair state incorrect", s)
+	}
+	if err := save(statePath(), State{Installed: "0.2.6", HighWater: 2006}); err != nil {
+		t.Fatal(err)
+	}
+	if err := RepairOfflineBootstrap("0.2.5"); err == nil || readState().HighWater != 2006 {
+		t.Fatal("offline repair lowered high-water mark")
+	}
+}
 func TestReleaseAssetExactURL(t *testing.T) {
 	var r Release
 	r.TagName = "v0.2.1"
