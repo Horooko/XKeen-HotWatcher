@@ -89,6 +89,21 @@ func main() {
 		out, e := json.MarshalIndent(v, "", "  ")
 		die(e)
 		die(os.WriteFile(os.Args[3], append(out, '\n'), 0644))
+	case "verify-seed-env":
+		if len(os.Args) != 2 {
+			die(fmt.Errorf("verify-seed-env takes no arguments"))
+		}
+		seed, e := base64.StdEncoding.DecodeString(strings.TrimSpace(os.Getenv("UPDATE_SIGNING_SEED")))
+		die(e)
+		if len(seed) != ed25519.SeedSize {
+			die(fmt.Errorf("UPDATE_SIGNING_SEED must contain a base64-encoded 32-byte Ed25519 seed"))
+		}
+		trusted, e := base64.StdEncoding.DecodeString(u.PublicKeyB64)
+		die(e)
+		actual := ed25519.NewKeyFromSeed(seed).Public().(ed25519.PublicKey)
+		if !ed25519.PublicKey(trusted).Equal(actual) {
+			die(fmt.Errorf("UPDATE_SIGNING_SEED does not match the public key embedded in hotwatcher-updater"))
+		}
 	case "verify":
 		if len(os.Args) != 4 {
 			die(fmt.Errorf("verify MANIFEST SIGNATURE"))

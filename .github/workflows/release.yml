@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing signed release tag
+        description: Existing Git tag without a published Release
         required: true
         type: string
 permissions:
@@ -33,9 +33,23 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
-          test "$(git describe --tags --exact-match)" = "$RELEASE_TAG"
-          test -n "$UPDATE_SIGNING_SEED"
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Release tag must be vMAJOR.MINOR.PATCH."
+            exit 1
+          fi
+          if [[ "$(git describe --tags --exact-match)" != "$RELEASE_TAG" ]]; then
+            echo "::error::The checkout must point exactly at $RELEASE_TAG."
+            exit 1
+          fi
+          if [[ -z "$UPDATE_SIGNING_SEED" ]]; then
+            echo "::error::Set UPDATE_SIGNING_SEED in the signed-release GitHub environment before pushing a release tag."
+            exit 1
+          fi
+          go run ./cmd/release-tool verify-seed-env
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "::error::Release $RELEASE_TAG already exists. Push a new tag; do not create an empty Release in the GitHub UI."
+            exit 1
+          fi
           go test ./...
           go vet ./...
           version="${RELEASE_TAG#v}"
@@ -47,13 +61,13 @@ jobs:
           for arch in arm64 amd64; do
             CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath -ldflags="-s -w -X local/xkeen-hot-watcher/internal/hotwatcher.Version=$version -X local/xkeen-hot-watcher/internal/updater.Commit=$commit -X local/xkeen-hot-watcher/internal/updater.BuildTime=$built -X local/xkeen-hot-watcher/internal/updater.Dirty=false" -o "release-out/hotwatcher_${RELEASE_TAG}_linux_${arch}" ./cmd/hotwatcher
             CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath -ldflags='-s -w' -o "release-out/hotwatcher-updater_linux_${arch}" ./cmd/hotwatcher-updater
-            mkdir -p "release-out/package-${arch}/dist" "release-out/package-${arch}/scripts"
+            mkdir -p "release-out/package-${arch}/dist"
             cp "release-out/hotwatcher_${RELEASE_TAG}_linux_${arch}" "release-out/package-${arch}/dist/hotwatcher-linux-${arch}"
             cp "release-out/hotwatcher-updater_linux_${arch}" "release-out/package-${arch}/dist/hotwatcher-updater-linux-${arch}"
             cp install.sh "release-out/package-${arch}/"
             cp README.md LICENSE "release-out/package-${arch}/"
             cp -r docs "release-out/package-${arch}/"
-            cp scripts/S99hotwatcher scripts/S98hotwatcher-updater "release-out/package-${arch}/scripts/"
+            cp -r scripts "release-out/package-${arch}/"
             (cd "release-out/package-${arch}/dist" && sha256sum * > SHA256SUMS)
             tar -czf "release-out/xkeen-hotwatcher_${RELEASE_TAG}_linux_${arch}.tar.gz" -C "release-out/package-${arch}" .
           done
