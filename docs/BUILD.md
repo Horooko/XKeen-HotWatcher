@@ -2,7 +2,8 @@
 
 Код использует Go standard library, без внешних Go-модулей. Минимальная языковая версия
 в go.mod — 1.23. Для собственной эксплуатационной сборки используй поддерживаемую
-актуальную версию Go. Версия компилятора поставляемых файлов записана в BUILD_INFO.txt.
+актуальную версию Go. Сведения об исходном снимке записаны в BUILD_INFO.txt;
+компилятор опубликованных файлов указан в release workflow.
 
 ```sh
 go test -race -cover ./...
@@ -15,8 +16,8 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o dis
 ```
 
 Или `make test`, `make build`. Исходники могут быть расширены для других Linux-архитектур,
-но готовые бинарники и установщик включают только две перечисленные. Windows/macOS не
-являются целями запуска: используется Linux flock и Entware runtime.
+но release workflow собирает бинарники и установочный архив только для двух перечисленных.
+Windows/macOS не являются целями запуска: используется Linux flock и Entware runtime.
 
 ```text
 cmd/hotwatcher/main.go                 CLI и daemon loop

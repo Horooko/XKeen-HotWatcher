@@ -1,5 +1,6 @@
 /dist/hotwatcher-linux-*
 /dist/hotwatcher-updater-linux-*
+/dist/SHA256SUMS
 *.test
 coverage.out
 subscription.url

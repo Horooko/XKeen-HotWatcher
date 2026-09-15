@@ -1,13 +1,14 @@
-XKeen Hot Watcher 0.2.0 bootstrap build
+XKeen Hot Watcher 0.2.1 source snapshot
 Build date: 2026-09-15
 Compiler available in build environment: go version go1.27.1 linux/amd64
 Module: local/xkeen-hot-watcher
 Targets: linux/arm64 (GOARM64=v8.0), linux/amd64
-Includes hotwatcher-updater for both targets; public Ed25519 bootstrap key is compiled in.
+Includes hotwatcher-updater source; the public Ed25519 bootstrap key is compiled in.
 CGO_ENABLED=0; -trimpath; -ldflags="-s -w"
 External Go modules: none
 Bundled Xray binary: none
-Native tests verified in Linux container; current bootstrap binaries are not release-tagged.
-ARM64 binary: cross-compiled, ELF architecture checked; not run on target router
+Native tests verified in Linux container; release binaries are built from the signed tag by GitHub Actions.
+No prebuilt binaries are tracked in the source repository.
+ARM64 target has not been run on the target router.
 Use a maintained Go toolchain for your own deployment rebuilds.
 This is not a signed upstream XKeen/XTLS release.
