@@ -1,4 +1,4 @@
-XKeen Hot Watcher 0.2.1 source snapshot
+XKeen Hot Watcher 0.2.2 source snapshot
 Build date: 2026-09-15
 Compiler available in build environment: go version go1.27.1 linux/amd64
 Module: local/xkeen-hot-watcher
