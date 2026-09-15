@@ -14,7 +14,7 @@
 Установленный updater `v0.2.4` отклоняет обычные поля `url` в ответе GitHub Releases.
 Если `hotwatcher update status` работает, а `hotwatcher update check` отвечает
 `json: unknown field "url"`, обычный `apply` тоже остановится до скачивания.
-После объединения изменений и публикации подписанного `v0.2.5` выполните
+После публикации подписанного `v0.2.6` выполните
 одноразовый bootstrap-ремонт: распакуйте архив из GitHub Release в
 `/opt/tmp/xkeen-hot-watcher`, затем выполните:
 

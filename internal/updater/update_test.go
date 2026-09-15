@@ -85,7 +85,7 @@ func TestOfflineRepairRecordsBinaryAndPreservesHighWater(t *testing.T) {
 	Binary = filepath.Join(Root, "hotwatcher")
 	ConfigPath = filepath.Join(Root, "updates.json")
 	defer func() { Root, Binary, ConfigPath = oldRoot, oldBinary, oldConfig }()
-	if err := os.WriteFile(Binary, []byte("candidate-v0.2.5"), 0700); err != nil {
+	if err := os.WriteFile(Binary, []byte("candidate-v0.2.7"), 0700); err != nil {
 		t.Fatal(err)
 	}
 	if err := save(ConfigPath, Defaults()); err != nil {
@@ -94,18 +94,18 @@ func TestOfflineRepairRecordsBinaryAndPreservesHighWater(t *testing.T) {
 	if err := save(statePath(), State{Installed: "0.2.4", InstalledHash: "old", HighWater: 2004, Verified: true}); err != nil {
 		t.Fatal(err)
 	}
-	if err := RepairOfflineBootstrap("0.2.5"); err != nil {
+	if err := RepairOfflineBootstrap("0.2.7"); err != nil {
 		t.Fatal(err)
 	}
 	s := readState()
 	hash, _ := hashFile(Binary)
-	if s.Invalid || s.Installed != "0.2.5" || s.Previous != "0.2.4" || s.InstalledHash != hash || s.HighWater != 2005 || s.Verified {
+	if s.Invalid || s.Installed != "0.2.7" || s.Previous != "0.2.4" || s.InstalledHash != hash || s.HighWater != 2007 || s.Verified {
 		t.Fatal("offline repair state incorrect", s)
 	}
-	if err := save(statePath(), State{Installed: "0.2.6", HighWater: 2006}); err != nil {
+	if err := save(statePath(), State{Installed: "0.2.8", HighWater: 2008}); err != nil {
 		t.Fatal(err)
 	}
-	if err := RepairOfflineBootstrap("0.2.5"); err == nil || readState().HighWater != 2006 {
+	if err := RepairOfflineBootstrap("0.2.7"); err == nil || readState().HighWater != 2008 {
 		t.Fatal("offline repair lowered high-water mark")
 	}
 }

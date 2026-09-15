@@ -15,13 +15,19 @@ type fakeRuntime struct {
 	initial                            string
 	adds, removes, probes              []string
 	failAdd, failProbe, failValidation bool
+	failList                           bool
 	addFailAt                          int
 	latencies                          map[string]time.Duration
 	failedTags                         map[string]bool
+	probeFailsOn                       map[string]int
+	probeCounts                        map[string]int
 	afterOverride                      func(string)
 }
 
 func (f *fakeRuntime) List() (map[string]bool, error) {
+	if f.failList {
+		return nil, errors.New("Xray API unavailable")
+	}
 	m := map[string]bool{}
 	for k, v := range f.tags {
 		m[k] = v
@@ -66,6 +72,13 @@ func (f *fakeRuntime) Probe(n Node) error {
 }
 func (f *fakeRuntime) ProbeLatency(n Node) (time.Duration, error) {
 	f.probes = append(f.probes, n.Tag)
+	if f.probeCounts == nil {
+		f.probeCounts = map[string]int{}
+	}
+	f.probeCounts[n.Tag]++
+	if f.probeFailsOn[n.Tag] == f.probeCounts[n.Tag] {
+		return 0, errors.New("probe failed at selected attempt")
+	}
 	if f.failProbe || f.failedTags[n.Tag] {
 		return 0, errors.New("probe failed")
 	}
@@ -269,6 +282,208 @@ func TestKeysDoesNotGuessHistoricalSwitchTime(t *testing.T) {
 	report, err := e.Keys()
 	if err != nil || report.SelectedAgo != nil {
 		t.Fatal("unknown old selection age must not be invented", report, err)
+	}
+}
+
+func TestSelectByExactNameAndRejectAmbiguity(t *testing.T) {
+	e, r, raw := setupEngine(t)
+	*raw = uri(testUUID, "FI node") + "\n" + uri("00000000-0000-4000-8000-000000000002", "DE node")
+	if err := e.Sync(true); err != nil {
+		t.Fatal(err)
+	}
+	s, _ := e.state()
+	target := s.Active[0]
+	if target.Tag == s.Selected {
+		target = s.Active[1]
+	}
+	if err := e.Select(target.Name); err != nil {
+		t.Fatal(err)
+	}
+	if r.override != target.Tag {
+		t.Fatal("exact subscription name did not select its owned tag")
+	}
+	s, _ = e.state()
+	for i := range s.Active {
+		s.Active[i].Name = "duplicate"
+	}
+	if err := atomicWrite(e.statePath(), encode(s), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Select("duplicate"); err == nil || r.override != target.Tag {
+		t.Fatal("ambiguous name changed selection")
+	}
+}
+
+func TestSelectDoesNotJournalWhenXrayAPIUnavailable(t *testing.T) {
+	e, r, raw := setupEngine(t)
+	*raw = uri(testUUID, "FI") + "\n" + uri("00000000-0000-4000-8000-000000000002", "DE")
+	if err := e.Sync(true); err != nil {
+		t.Fatal(err)
+	}
+	s, _ := e.state()
+	other := s.Active[0].Tag
+	if other == s.Selected {
+		other = s.Active[1].Tag
+	}
+	r.failList = true
+	if err := e.Select(other); err == nil || e.pending() {
+		t.Fatal("API-unavailable selection created a pending transaction")
+	}
+}
+
+func TestCheckKeySwitchesOnlyWhenActiveFails(t *testing.T) {
+	e, r, raw := setupEngine(t)
+	*raw = uri(testUUID, "FI") + "\n" + uri("00000000-0000-4000-8000-000000000002", "DE")
+	if err := e.Sync(true); err != nil {
+		t.Fatal(err)
+	}
+	s, _ := e.state()
+	other := s.Active[0].Tag
+	if other == s.Selected {
+		other = s.Active[1].Tag
+	}
+	if selected, err := e.CheckKey(); err != nil || selected != s.Selected || r.override != s.Selected || e.pending() {
+		t.Fatal("working key changed", selected, err)
+	}
+	r.failedTags = map[string]bool{s.Selected: true}
+	if selected, err := e.CheckKey(); err != nil || selected != other || r.override != other || e.pending() {
+		t.Fatal("failed key not replaced", selected, err)
+	}
+	r.failedTags[other] = true
+	if _, err := e.CheckKey(); err == nil || r.override != other {
+		t.Fatal("all failed keys did not preserve current pin")
+	}
+}
+
+func TestCheckKeyTriesNextPeerIfFastestFailsFinalProbe(t *testing.T) {
+	e, r, raw := setupEngine(t)
+	*raw = uri(testUUID, "FI") + "\n" + uri("00000000-0000-4000-8000-000000000002", "DE") + "\n" + uri("00000000-0000-4000-8000-000000000003", "US")
+	if err := e.Sync(true); err != nil {
+		t.Fatal(err)
+	}
+	s, _ := e.state()
+	var peers []string
+	for _, n := range s.Active {
+		if n.Tag != s.Selected {
+			peers = append(peers, n.Tag)
+		}
+	}
+	r.failedTags = map[string]bool{s.Selected: true}
+	r.latencies = map[string]time.Duration{peers[0]: 10 * time.Millisecond, peers[1]: 30 * time.Millisecond}
+	r.probeFailsOn = map[string]int{peers[0]: r.probeCounts[peers[0]] + 2}
+	selected, err := e.CheckKey()
+	if err != nil || selected != peers[1] || r.override != peers[1] || e.pending() {
+		t.Fatal("second verified peer not selected after fastest flapped", selected, err)
+	}
+}
+
+func TestStaticStopStartUsesOldOutboundWithoutChangingIt(t *testing.T) {
+	e, r, _ := setupEngine(t)
+	if err := e.Sync(true); err != nil {
+		t.Fatal(err)
+	}
+	r.tags["vless-reality"] = true
+	oldStatic := []byte(`{"outbounds":[{"tag":"vless-reality","protocol":"vless","settings":{}}]}`)
+	staticFile := filepath.Join(e.C.ConfigDir, "04_outbounds.json")
+	if err := os.WriteFile(staticFile, oldStatic, 0600); err != nil {
+		t.Fatal(err)
+	}
+	previousPause := updaterPausePath
+	updaterPausePath = filepath.Join(e.C.StateDir, "updater-pause")
+	defer func() { updaterPausePath = previousPause }()
+	if err := e.StopToStatic(); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.StopToStatic(); err != nil {
+		t.Fatal("repeat stop should be idempotent", err)
+	}
+	if r.override != staticAlias {
+		t.Fatal("static old outbound was not selected")
+	}
+	if mode, err := e.staticMode(); err != nil || mode == nil {
+		t.Fatal("static marker missing", err)
+	}
+	var generated struct {
+		Outbounds []map[string]any `json:"outbounds"`
+	}
+	if err := mustJSON(outputFile(e.C), &generated); err != nil || len(generated.Outbounds) != 1 || generated.Outbounds[0]["tag"] != staticAlias {
+		t.Fatal("static generated file was not reduced to static alias")
+	}
+	// Simulate a production Xray restart: only the alias from the generated
+	// fragment exists, while the saved subscription pool is absent from memory.
+	r.tags = map[string]bool{staticAlias: true, "vless-reality": true, "direct": true}
+	r.override = ""
+	if _, err := e.CheckKey(); err == nil {
+		t.Fatal("subscription command ran during static mode")
+	}
+	if err := e.StartFromStatic(); err != nil {
+		t.Fatal(err)
+	}
+	s, _ := e.state()
+	if r.override != s.Selected || r.tags[staticAlias] || e.pending() {
+		t.Fatal("subscription runtime not restored")
+	}
+	if _, err := e.checkDisk(s); err != nil {
+		t.Fatal("subscription disk not restored", err)
+	}
+	if mode, _ := e.staticMode(); mode != nil {
+		t.Fatal("static marker retained")
+	}
+	if _, err := os.Lstat(updaterPausePath); !os.IsNotExist(err) {
+		t.Fatal("updater pause retained")
+	}
+	if after, _ := os.ReadFile(staticFile); string(after) != string(oldStatic) {
+		t.Fatal("administrator static outbound was modified")
+	}
+}
+
+func TestStaticStopRejectsDeadFallbackWithoutMarker(t *testing.T) {
+	e, r, _ := setupEngine(t)
+	if err := e.Sync(true); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(e.C.ConfigDir, "04_outbounds.json"), []byte(`{"outbounds":[{"tag":"vless-reality","protocol":"vless"}]}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	old, _ := os.ReadFile(outputFile(e.C))
+	r.failedTags = map[string]bool{staticAlias: true}
+	if err := e.StopToStatic(); err == nil {
+		t.Fatal("dead static fallback accepted")
+	}
+	s, _ := e.state()
+	if mode, _ := e.staticMode(); mode != nil || r.override != s.Selected {
+		t.Fatal("failed static probe changed mode or pin")
+	}
+	if after, _ := os.ReadFile(outputFile(e.C)); string(after) != string(old) {
+		t.Fatal("failed static probe changed managed file")
+	}
+}
+
+func TestInterruptedStaticStopCanRestoreSubscription(t *testing.T) {
+	e, r, _ := setupEngine(t)
+	if err := e.Sync(true); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(e.C.ConfigDir, "04_outbounds.json"), []byte(`{"outbounds":[{"tag":"vless-reality","protocol":"vless"}]}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	previousPause := updaterPausePath
+	updaterPausePath = filepath.Join(e.C.StateDir, "updater-pause")
+	defer func() { updaterPausePath = previousPause }()
+	r.failAdd = true
+	if err := e.StopToStatic(); err == nil {
+		t.Fatal("API add failure not reported")
+	}
+	if marker, _ := e.staticMode(); marker == nil {
+		t.Fatal("interrupted static transition not journaled")
+	}
+	r.failAdd = false
+	if err := e.StartFromStatic(); err != nil {
+		t.Fatal("interrupted transition could not restore", err)
+	}
+	s, _ := e.state()
+	if marker, _ := e.staticMode(); marker != nil || r.override != s.Selected {
+		t.Fatal("interrupted transition retained static marker or pin")
 	}
 }
 

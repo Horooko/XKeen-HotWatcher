@@ -14,7 +14,7 @@ import (
 	"strings"
 )
 
-var Version = "0.2.5"
+var Version = "0.2.7"
 
 const TagPrefix = "main--VL--hw-"
 
@@ -33,19 +33,21 @@ type Config struct {
 	APITimeoutSeconds   int      `json:"api_timeout_seconds"`
 	IntervalSeconds     int      `json:"interval_seconds"`
 	ReconcileSeconds    int      `json:"reconcile_seconds"`
+	KeyCheckSeconds     int      `json:"key_check_interval_seconds"`
 	GraceSeconds        int      `json:"grace_seconds"`
 	AutoGC              bool     `json:"automatic_gc"`
 	MaxNodes            int      `json:"max_nodes"`
 	MaxRetired          int      `json:"max_retired"`
 	PreferredName       string   `json:"preferred_name_contains"`
 	SelectionPolicy     string   `json:"selection_policy"`
+	StaticFallbackTag   string   `json:"static_fallback_tag"`
 	CAFile              string   `json:"ca_file"`
 	AllowTLS            bool     `json:"allow_tls_nodes"`
 	AllowLoopbackHTTP   bool     `json:"allow_loopback_http_for_tests"`
 }
 
 func Defaults() Config {
-	return Config{AssetDir: "/opt/etc/xray/dat", SubscriptionURLFile: "/opt/etc/hotwatcher/subscription.url", XrayBinary: "/opt/sbin/xray", APIAddress: "127.0.0.1:10085", BalancerTag: "proxy", ConfigDir: "/opt/etc/xray/configs", GeneratedFile: "04_outbounds.main.json", StateDir: "/opt/var/lib/hotwatcher", ProbeURLs: []string{"https://www.gstatic.com/generate_204"}, ProbeTimeoutSeconds: 12, HTTPTimeoutSeconds: 30, APITimeoutSeconds: 10, IntervalSeconds: 1800, ReconcileSeconds: 60, GraceSeconds: 1800, MaxNodes: 64, MaxRetired: 128, SelectionPolicy: "latency"}
+	return Config{AssetDir: "/opt/etc/xray/dat", SubscriptionURLFile: "/opt/etc/hotwatcher/subscription.url", XrayBinary: "/opt/sbin/xray", APIAddress: "127.0.0.1:10085", BalancerTag: "proxy", ConfigDir: "/opt/etc/xray/configs", GeneratedFile: "04_outbounds.main.json", StateDir: "/opt/var/lib/hotwatcher", ProbeURLs: []string{"https://www.gstatic.com/generate_204"}, ProbeTimeoutSeconds: 12, HTTPTimeoutSeconds: 30, APITimeoutSeconds: 10, IntervalSeconds: 1800, ReconcileSeconds: 60, KeyCheckSeconds: 300, GraceSeconds: 1800, MaxNodes: 64, MaxRetired: 128, SelectionPolicy: "latency", StaticFallbackTag: "vless-reality"}
 }
 func LoadConfig(path string) (Config, error) {
 	c := Defaults()
@@ -86,7 +88,10 @@ func (c Config) Validate() error {
 	if c.SelectionPolicy != "latency" && c.SelectionPolicy != "sticky" {
 		return errors.New("selection_policy must be latency or sticky")
 	}
-	if c.IntervalSeconds < 60 || c.ReconcileSeconds < 10 || c.GraceSeconds < 60 || c.MaxNodes < 1 || c.MaxNodes > 256 || c.MaxRetired < 1 || c.MaxRetired > 1024 {
+	if c.StaticFallbackTag == "" || len(c.StaticFallbackTag) > 128 || strings.HasPrefix(c.StaticFallbackTag, "main--VL") || c.StaticFallbackTag == "direct" || c.StaticFallbackTag == "block" {
+		return errors.New("static_fallback_tag must name a non-owned proxy outbound")
+	}
+	if c.IntervalSeconds < 60 || c.ReconcileSeconds < 10 || c.KeyCheckSeconds < 60 || c.KeyCheckSeconds > 3600 || c.GraceSeconds < 60 || c.MaxNodes < 1 || c.MaxNodes > 256 || c.MaxRetired < 1 || c.MaxRetired > 1024 {
 		return errors.New("configuration limits out of range")
 	}
 	for _, n := range []int{c.ProbeTimeoutSeconds, c.HTTPTimeoutSeconds, c.APITimeoutSeconds} {

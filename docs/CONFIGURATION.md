@@ -21,12 +21,14 @@
 | `api_timeout_seconds` | `10` | API deadline; на сам CLI есть небольшой дополнительный запас |
 | `interval_seconds` | `1800` | Проверка подписки; минимум 60 |
 | `reconcile_seconds` | `60` | Восстановление pin/pool после потери runtime; минимум 10 |
+| `key_check_interval_seconds` | `300` | Две HTTPS-пробы активного ключа; при отказе выбор самого быстрого из сохранённых; 60..3600 |
 | `grace_seconds` | `1800` | Минимальное время до `gc`; минимум 60 |
 | `automatic_gc` | `false` | Автоудаление retired при очередном успешном неизменном sync |
 | `max_nodes` | `64` | Лимит активных уникальных VLESS, 1..256 |
 | `max_retired` | `128` | Лимит ещё не удалённых старых узлов, 1..1024 |
 | `preferred_name_contains` | пусто | Предпочтение при первичном выборе/исчезновении выбранного endpoint |
 | `selection_policy` | `latency` | `latency`: выбирать минимальную задержку HTTPS через VLESS при каждом sync; `sticky`: сохранять текущий узел |
+| `static_fallback_tag` | `vless-reality` | Тег статического VLESS outbound в `04_outbounds.json` для `hotwatcher stop` |
 | `ca_file` | пусто | Дополнительный PEM bundle для HTTPS; проверка TLS не отключается |
 | `allow_tls_nodes` | `false` | Разрешить VLESS+TLS наряду с Reality |
 | `allow_loopback_http_for_tests` | `false` | Только для локальных тестов: HTTP на IP loopback |
