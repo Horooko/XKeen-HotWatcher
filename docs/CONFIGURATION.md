@@ -26,6 +26,7 @@
 | `max_nodes` | `64` | Лимит активных уникальных VLESS, 1..256 |
 | `max_retired` | `128` | Лимит ещё не удалённых старых узлов, 1..1024 |
 | `preferred_name_contains` | пусто | Предпочтение при первичном выборе/исчезновении выбранного endpoint |
+| `selection_policy` | `latency` | `latency`: выбирать минимальную задержку HTTPS через VLESS при каждом sync; `sticky`: сохранять текущий узел |
 | `ca_file` | пусто | Дополнительный PEM bundle для HTTPS; проверка TLS не отключается |
 | `allow_tls_nodes` | `false` | Разрешить VLESS+TLS наряду с Reality |
 | `allow_loopback_http_for_tests` | `false` | Только для локальных тестов: HTTP на IP loopback |

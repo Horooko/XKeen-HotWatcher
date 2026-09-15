@@ -30,6 +30,7 @@ type Runtime interface {
 	Override(string) error
 	Validate([]Node, string) error
 	Probe(Node) error
+	ProbeLatency(Node) (time.Duration, error)
 }
 type Xray struct{ C Config }
 
@@ -232,21 +233,26 @@ func (x Xray) Validate(nodes []Node, selected string) error {
 // Probe a candidate using a short-lived, isolated Xray process. It has no API,
 // TProxy, production inbounds or netfilter integration. Only this child is killed.
 func (x Xray) Probe(n Node) error {
+	_, err := x.ProbeLatency(n)
+	return err
+}
+
+func (x Xray) ProbeLatency(n Node) (time.Duration, error) {
 	ln, e := net.Listen("tcp", "127.0.0.1:0")
 	if e != nil {
-		return errors.New("cannot reserve loopback probe port")
+		return 0, errors.New("cannot reserve loopback probe port")
 	}
 	port := ln.Addr().(*net.TCPAddr).Port
 	ln.Close()
 	dir, e := os.MkdirTemp(x.C.StateDir, "probe-")
 	if e != nil {
-		return e
+		return 0, e
 	}
 	defer os.RemoveAll(dir)
 	cfg := map[string]any{"log": map[string]any{"loglevel": "none"}, "inbounds": []any{map[string]any{"tag": "hw-probe", "listen": "127.0.0.1", "port": port, "protocol": "http", "settings": map[string]any{}}}, "outbounds": []any{n.Outbound}}
 	file := filepath.Join(dir, "probe.json")
 	if e = os.WriteFile(file, encode(cfg), 0600); e != nil {
-		return e
+		return 0, e
 	}
 	duration := time.Duration(x.C.ProbeTimeoutSeconds*len(x.C.ProbeURLs)+5) * time.Second
 	ctx, cancel := context.WithTimeout(context.Background(), duration)
@@ -256,7 +262,7 @@ func (x Xray) Probe(n Node) error {
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
 	if e = cmd.Start(); e != nil {
-		return errors.New("cannot start isolated candidate probe")
+		return 0, errors.New("cannot start isolated candidate probe")
 	}
 	done := make(chan struct{})
 	go func() { cmd.Wait(); close(done) }()
@@ -272,7 +278,7 @@ func (x Xray) Probe(n Node) error {
 	for i := 0; i < 50; i++ {
 		select {
 		case <-done:
-			return errors.New("isolated candidate probe exited at startup")
+			return 0, errors.New("isolated candidate probe exited at startup")
 		default:
 		}
 		conn, err := net.DialTimeout("tcp", address, 100*time.Millisecond)
@@ -284,12 +290,12 @@ func (x Xray) Probe(n Node) error {
 		time.Sleep(100 * time.Millisecond)
 	}
 	if !ready {
-		return errors.New("isolated probe port did not become ready")
+		return 0, errors.New("isolated probe port did not become ready")
 	}
 	proxy, _ := url.Parse("http://" + address)
 	tc, e := tlsConfig(x.C)
 	if e != nil {
-		return e
+		return 0, e
 	}
 	tr := &http.Transport{Proxy: http.ProxyURL(proxy), TLSClientConfig: tc, DisableKeepAlives: true}
 	defer tr.CloseIdleConnections()
@@ -300,6 +306,7 @@ func (x Xray) Probe(n Node) error {
 			continue
 		}
 		req.Header.Set("User-Agent", "HotWatcher-Probe/"+Version)
+		started := time.Now()
 		res, e := client.Do(req)
 		if e != nil {
 			continue
@@ -309,11 +316,11 @@ func (x Xray) Probe(n Node) error {
 		if res.StatusCode == 204 {
 			select {
 			case <-done:
-				return errors.New("candidate probe exited unexpectedly")
+				return 0, errors.New("candidate probe exited unexpectedly")
 			default:
-				return nil
+				return time.Since(started), nil
 			}
 		}
 	}
-	return errors.New("candidate could not reach any HTTPS probe endpoint with status 204")
+	return 0, errors.New("candidate could not reach any HTTPS probe endpoint with status 204")
 }

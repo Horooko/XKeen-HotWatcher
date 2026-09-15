@@ -24,7 +24,7 @@ cmd/hotwatcher/main.go                 CLI и daemon loop
 internal/hotwatcher/config.go         Конфигурация и приватный URL
 internal/hotwatcher/subscription.go   HTTPS + конвертер VLESS
 internal/hotwatcher/runtime.go        CLI adapter Xray + isolated probe
-internal/hotwatcher/engine.go         Транзакции, sticky pin, state, GC
+internal/hotwatcher/engine.go         Транзакции, выбор по HTTPS-задержке, pin, state, GC
 internal/hotwatcher/files.go          Atomic replace, flock, private logs
 internal/hotwatcher/*_test.go         Unit/fault/process/optional-real tests
 scripts/                              Установка API/службы, миграция, отчёт

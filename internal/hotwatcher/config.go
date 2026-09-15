@@ -14,7 +14,7 @@ import (
 	"strings"
 )
 
-var Version = "0.2.4"
+var Version = "0.2.5"
 
 const TagPrefix = "main--VL--hw-"
 
@@ -38,13 +38,14 @@ type Config struct {
 	MaxNodes            int      `json:"max_nodes"`
 	MaxRetired          int      `json:"max_retired"`
 	PreferredName       string   `json:"preferred_name_contains"`
+	SelectionPolicy     string   `json:"selection_policy"`
 	CAFile              string   `json:"ca_file"`
 	AllowTLS            bool     `json:"allow_tls_nodes"`
 	AllowLoopbackHTTP   bool     `json:"allow_loopback_http_for_tests"`
 }
 
 func Defaults() Config {
-	return Config{AssetDir: "/opt/etc/xray/dat", SubscriptionURLFile: "/opt/etc/hotwatcher/subscription.url", XrayBinary: "/opt/sbin/xray", APIAddress: "127.0.0.1:10085", BalancerTag: "proxy", ConfigDir: "/opt/etc/xray/configs", GeneratedFile: "04_outbounds.main.json", StateDir: "/opt/var/lib/hotwatcher", ProbeURLs: []string{"https://www.gstatic.com/generate_204"}, ProbeTimeoutSeconds: 12, HTTPTimeoutSeconds: 30, APITimeoutSeconds: 10, IntervalSeconds: 1800, ReconcileSeconds: 60, GraceSeconds: 1800, MaxNodes: 64, MaxRetired: 128}
+	return Config{AssetDir: "/opt/etc/xray/dat", SubscriptionURLFile: "/opt/etc/hotwatcher/subscription.url", XrayBinary: "/opt/sbin/xray", APIAddress: "127.0.0.1:10085", BalancerTag: "proxy", ConfigDir: "/opt/etc/xray/configs", GeneratedFile: "04_outbounds.main.json", StateDir: "/opt/var/lib/hotwatcher", ProbeURLs: []string{"https://www.gstatic.com/generate_204"}, ProbeTimeoutSeconds: 12, HTTPTimeoutSeconds: 30, APITimeoutSeconds: 10, IntervalSeconds: 1800, ReconcileSeconds: 60, GraceSeconds: 1800, MaxNodes: 64, MaxRetired: 128, SelectionPolicy: "latency"}
 }
 func LoadConfig(path string) (Config, error) {
 	c := Defaults()
@@ -81,6 +82,9 @@ func (c Config) Validate() error {
 	}
 	if c.BalancerTag == "" || len(c.BalancerTag) > 128 {
 		return errors.New("invalid balancer_tag")
+	}
+	if c.SelectionPolicy != "latency" && c.SelectionPolicy != "sticky" {
+		return errors.New("selection_policy must be latency or sticky")
 	}
 	if c.IntervalSeconds < 60 || c.ReconcileSeconds < 10 || c.GraceSeconds < 60 || c.MaxNodes < 1 || c.MaxNodes > 256 || c.MaxRetired < 1 || c.MaxRetired > 1024 {
 		return errors.New("configuration limits out of range")

@@ -153,6 +153,15 @@ func (e *Engine) Sync(adopt bool) error {
 		if er = e.reconcile(s, tags); er != nil {
 			return er
 		}
+		if e.C.SelectionPolicy == "latency" {
+			selected, probeErr := e.fastest(nodes, s.Active, tags, s.Selected)
+			if probeErr != nil {
+				return probeErr
+			}
+			if selected != s.Selected {
+				return e.Select(selected)
+			}
+		}
 		e.event("unchanged", map[string]any{"active_nodes": len(s.Active), "ignored_non_vless": parsed.Skipped})
 		if e.C.AutoGC {
 			return e.gc(s)
@@ -180,16 +189,23 @@ func (e *Engine) Sync(adopt bool) error {
 		previousIdentity = legacyIdentity(oldFile, oldTarget)
 	}
 	selected := choose(nodes, oldTarget, previousIdentity, e.C.PreferredName)
-	if er = e.R.Validate(nodes, selected); er != nil {
-		return er
-	}
-	for _, n := range nodes {
-		_, known := findNode(oldNodes, n.Tag)
-		if !known || !tags[n.Tag] {
-			if er = e.R.Probe(n); er != nil {
-				return fmt.Errorf("candidate %s failed health check; old configuration kept: %w", n.Tag, er)
+	if e.C.SelectionPolicy == "latency" {
+		selected, er = e.fastest(nodes, oldNodes, tags, selected)
+		if er != nil {
+			return er
+		}
+	} else {
+		for _, n := range nodes {
+			_, known := findNode(oldNodes, n.Tag)
+			if !known || !tags[n.Tag] {
+				if er = e.R.Probe(n); er != nil {
+					return fmt.Errorf("candidate %s failed health check; old configuration kept: %w", n.Tag, er)
+				}
 			}
 		}
+	}
+	if er = e.R.Validate(nodes, selected); er != nil {
+		return er
 	}
 	retired := []Retired{}
 	if s != nil {
@@ -233,6 +249,31 @@ func (e *Engine) Sync(adopt bool) error {
 		return fmt.Errorf("transaction pending before staging: %w", er)
 	}
 	return e.commit(&t, false)
+}
+
+// fastest measures the complete HTTPS request through each isolated VLESS
+// outbound. New or missing production nodes must pass before any transaction
+// starts; failed existing nodes are excluded from this round of selection.
+func (e *Engine) fastest(nodes, oldNodes []Node, tags map[string]bool, fallback string) (string, error) {
+	best := ""
+	bestLatency := time.Duration(0)
+	for _, n := range nodes {
+		latency, err := e.R.ProbeLatency(n)
+		if err != nil {
+			_, known := findNode(oldNodes, n.Tag)
+			if !known || !tags[n.Tag] {
+				return "", fmt.Errorf("candidate %s failed health check; old configuration kept: %w", n.Tag, err)
+			}
+			continue
+		}
+		if best == "" || latency < bestLatency || (latency == bestLatency && n.Tag == fallback) {
+			best, bestLatency = n.Tag, latency
+		}
+	}
+	if best == "" {
+		return "", errors.New("all active nodes failed HTTPS latency probes; old selection kept")
+	}
+	return best, nil
 }
 func (e *Engine) setVerified(tag string) error {
 	if er := e.R.Override(tag); er != nil {
@@ -408,6 +449,7 @@ func (e *Engine) reconcile(s *State, tags map[string]bool) error {
 			if er := e.R.Add(n); er != nil {
 				return fmt.Errorf("runtime reconciliation failed: %w", er)
 			}
+			tags[n.Tag] = true
 		}
 	}
 	b, er := e.R.Balance()
@@ -486,7 +528,7 @@ func (e *Engine) Status() (map[string]any, error) {
 	if er != nil {
 		return nil, er
 	}
-	m := map[string]any{"version": Version, "adopted": s != nil, "hold": e.held(), "pending_transaction": e.pending(), "automatic_gc": e.C.AutoGC, "update_interval_seconds": e.C.IntervalSeconds, "hotwatcher_restarts_xray": false}
+	m := map[string]any{"version": Version, "adopted": s != nil, "hold": e.held(), "pending_transaction": e.pending(), "automatic_gc": e.C.AutoGC, "selection_policy": e.C.SelectionPolicy, "update_interval_seconds": e.C.IntervalSeconds, "hotwatcher_restarts_xray": false}
 	if s != nil {
 		m["selected"] = s.Selected
 		m["active_nodes"] = len(s.Active)

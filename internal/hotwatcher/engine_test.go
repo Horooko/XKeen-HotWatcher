@@ -16,6 +16,8 @@ type fakeRuntime struct {
 	adds, removes, probes              []string
 	failAdd, failProbe, failValidation bool
 	addFailAt                          int
+	latencies                          map[string]time.Duration
+	failedTags                         map[string]bool
 	afterOverride                      func(string)
 }
 
@@ -59,11 +61,18 @@ func (f *fakeRuntime) Validate([]Node, string) error {
 	return nil
 }
 func (f *fakeRuntime) Probe(n Node) error {
+	_, err := f.ProbeLatency(n)
+	return err
+}
+func (f *fakeRuntime) ProbeLatency(n Node) (time.Duration, error) {
 	f.probes = append(f.probes, n.Tag)
-	if f.failProbe {
-		return errors.New("probe failed")
+	if f.failProbe || f.failedTags[n.Tag] {
+		return 0, errors.New("probe failed")
 	}
-	return nil
+	if f.latencies != nil {
+		return f.latencies[n.Tag], nil
+	}
+	return time.Millisecond, nil
 }
 func setupEngine(t *testing.T) (*Engine, *fakeRuntime, *string) {
 	t.Helper()
@@ -120,14 +129,70 @@ func TestRenameOnlyDoesNotMutateRuntimeOrFile(t *testing.T) {
 	}
 	before, _ := os.ReadFile(outputFile(e.C))
 	adds := len(r.adds)
-	probes := len(r.probes)
 	*raw = uri(testUUID, "renamed")
 	if er := e.Sync(false); er != nil {
 		t.Fatal(er)
 	}
 	after, _ := os.ReadFile(outputFile(e.C))
-	if string(before) != string(after) || len(r.adds) != adds || len(r.probes) != probes {
+	if string(before) != string(after) || len(r.adds) != adds {
 		t.Fatal("metadata-only update changed runtime")
+	}
+}
+
+func TestLatencySelectionChangesOnUnchangedSubscription(t *testing.T) {
+	e, r, raw := setupEngine(t)
+	*raw = uri(testUUID, "FI") + "\n" + uri("00000000-0000-4000-8000-000000000002", "DE")
+	if err := e.Sync(true); err != nil {
+		t.Fatal(err)
+	}
+	s, _ := e.state()
+	if len(s.Active) != 2 {
+		t.Fatal("expected two nodes")
+	}
+	other := s.Active[0].Tag
+	if other == s.Selected {
+		other = s.Active[1].Tag
+	}
+	r.latencies = map[string]time.Duration{s.Selected: 80 * time.Millisecond, other: 20 * time.Millisecond}
+	if err := e.Sync(false); err != nil {
+		t.Fatal(err)
+	}
+	s, _ = e.state()
+	if s.Selected != other || r.override != other || e.pending() {
+		t.Fatal("fastest verified node was not durably selected")
+	}
+	r.failedTags = map[string]bool{other: true}
+	if err := e.Sync(false); err != nil {
+		t.Fatal(err)
+	}
+	s, _ = e.state()
+	if s.Selected == other || r.override != s.Selected {
+		t.Fatal("unreachable node remained selected")
+	}
+	r.failProbe = true
+	before, _ := os.ReadFile(outputFile(e.C))
+	selected := s.Selected
+	if err := e.Sync(false); err == nil {
+		t.Fatal("all probes failed")
+	}
+	after, _ := os.ReadFile(outputFile(e.C))
+	if string(before) != string(after) || r.override != selected || e.pending() {
+		t.Fatal("failed probes changed runtime")
+	}
+}
+
+func TestStickyPolicySkipsRepeatedLatencyChecks(t *testing.T) {
+	e, r, _ := setupEngine(t)
+	e.C.SelectionPolicy = "sticky"
+	if err := e.Sync(true); err != nil {
+		t.Fatal(err)
+	}
+	probes := len(r.probes)
+	if err := e.Sync(false); err != nil {
+		t.Fatal(err)
+	}
+	if len(r.probes) != probes {
+		t.Fatal("sticky policy probed unchanged subscription")
 	}
 }
 func TestKeyRotationPinsNewAndRetainsOld(t *testing.T) {
