@@ -5,6 +5,7 @@
 ```sh
 hotwatcher status
 hotwatcher doctor
+hotwatcher keys
 tail -n 40 /opt/var/lib/hotwatcher/events.jsonl
 cat /opt/var/lib/hotwatcher/last-check.json
 ```

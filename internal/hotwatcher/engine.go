@@ -17,12 +17,13 @@ type Retired struct {
 	After time.Time `json:"remove_after"`
 }
 type State struct {
-	Schema    int       `json:"schema"`
-	Selected  string    `json:"selected"`
-	Active    []Node    `json:"active"`
-	Retired   []Retired `json:"retired"`
-	DiskHash  string    `json:"disk_hash"`
-	UpdatedAt time.Time `json:"updated_at"`
+	Schema     int       `json:"schema"`
+	Selected   string    `json:"selected"`
+	SelectedAt time.Time `json:"selected_at,omitempty"`
+	Active     []Node    `json:"active"`
+	Retired    []Retired `json:"retired"`
+	DiskHash   string    `json:"disk_hash"`
+	UpdatedAt  time.Time `json:"updated_at"`
 }
 type Transaction struct {
 	Schema         int       `json:"schema"`
@@ -224,6 +225,11 @@ func (e *Engine) Sync(adopt bool) error {
 		return errors.New("retired pool limit reached; run gc outside a game session before another update")
 	}
 	next := State{Schema: 1, Active: nodes, Retired: retired, Selected: selected, UpdatedAt: e.Now()}
+	if s == nil || s.Selected != selected {
+		next.SelectedAt = next.UpdatedAt
+	} else {
+		next.SelectedAt = s.SelectedAt
+	}
 	next.DiskHash = digest(configBytes(nodes, selected))
 	t := Transaction{Schema: 1, Created: e.Now(), Previous: s, PreviousFile: oldFile, PreviousTarget: oldTarget, Next: next}
 	if s == nil {
@@ -683,6 +689,92 @@ func (e *Engine) Nodes() ([]map[string]any, error) {
 	sort.Slice(list, func(i, j int) bool { return list[i]["tag"].(string) < list[j]["tag"].(string) })
 	return list, nil
 }
+
+type KeyMeasurement struct {
+	Name   string
+	Tag    string
+	Active bool
+	PingMS *float64
+}
+
+type KeysReport struct {
+	Keys             []KeyMeasurement
+	LastCheckAgo     *time.Duration
+	LastCheckSuccess *bool
+	SelectedAgo      *time.Duration
+}
+
+// Keys measures each owned outbound through a separate loopback-only Xray
+// process. It reads the production pin but never changes it or the schedule.
+func (e *Engine) Keys() (KeysReport, error) {
+	report := KeysReport{}
+	s, err := e.state()
+	if err != nil {
+		return report, err
+	}
+	if s == nil {
+		return report, errors.New("not adopted; run adopt before keys")
+	}
+	bal, err := e.R.Balance()
+	if err != nil {
+		return report, err
+	}
+	if bal.Override != s.Selected {
+		return report, errors.New("live selection differs from saved state; run reconcile before keys")
+	}
+	node, ok := findNode(s.Active, s.Selected)
+	if !ok {
+		return report, errors.New("selected key is missing from active pool")
+	}
+	ordered := []Node{node}
+	for _, n := range s.Active {
+		if n.Tag != node.Tag {
+			ordered = append(ordered, n)
+		}
+	}
+	sort.Slice(ordered[1:], func(i, j int) bool {
+		a, b := ordered[i+1], ordered[j+1]
+		if a.Name == b.Name {
+			return a.Tag < b.Tag
+		}
+		return a.Name < b.Name
+	})
+	for _, n := range ordered {
+		m := KeyMeasurement{Name: safeLabel(n.Name), Tag: n.Tag, Active: n.Tag == s.Selected}
+		if latency, probeErr := e.R.ProbeLatency(n); probeErr == nil {
+			ms := float64(latency.Microseconds()) / 1000
+			m.PingMS = &ms
+		}
+		report.Keys = append(report.Keys, m)
+	}
+	now := e.Now()
+	if d, ok := elapsed(now, s.SelectedAt); ok {
+		report.SelectedAgo = &d
+	}
+	b, err := readPrivateOptional(filepath.Join(e.C.StateDir, "last-check.json"))
+	if err == nil {
+		var check struct {
+			Time    time.Time `json:"time"`
+			Success bool      `json:"success"`
+		}
+		if json.Unmarshal(b, &check) == nil {
+			if d, ok := elapsed(now, check.Time); ok {
+				report.LastCheckAgo = &d
+				report.LastCheckSuccess = &check.Success
+			}
+		}
+	} else if !os.IsNotExist(err) {
+		return report, errors.New("cannot read private last-check marker")
+	}
+	return report, nil
+}
+
+func elapsed(now, then time.Time) (time.Duration, bool) {
+	if then.IsZero() || now.Before(then) {
+		return 0, false
+	}
+	return now.Sub(then), true
+}
 func (e *Engine) Select(tag string) error {
 	if e.pending() {
 		return errors.New("pending transaction: selection refused")
@@ -708,6 +800,9 @@ func (e *Engine) Select(tag string) error {
 	next := *s
 	next.Selected = tag
 	next.UpdatedAt = e.Now()
+	if tag != s.Selected {
+		next.SelectedAt = next.UpdatedAt
+	}
 	next.DiskHash = digest(configBytes(next.Active, tag))
 	t := Transaction{Schema: 1, Created: e.Now(), Previous: s, PreviousFile: old, PreviousTarget: s.Selected, Next: next}
 	if len(encode(t)) > 16*1024*1024 {

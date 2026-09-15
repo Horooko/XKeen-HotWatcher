@@ -181,6 +181,97 @@ func TestLatencySelectionChangesOnUnchangedSubscription(t *testing.T) {
 	}
 }
 
+func TestKeysReportsLiveSelectedFirstAndFreshPingWithoutSwitching(t *testing.T) {
+	e, r, raw := setupEngine(t)
+	*raw = uri(testUUID, "FI") + "\n" + uri("00000000-0000-4000-8000-000000000002", "DE")
+	if err := e.Sync(true); err != nil {
+		t.Fatal(err)
+	}
+	s, _ := e.state()
+	if len(s.Active) != 2 || s.SelectedAt.IsZero() {
+		t.Fatal("adoption must record initial selection time")
+	}
+	active := s.Selected
+	other := s.Active[0].Tag
+	if other == active {
+		other = s.Active[1].Tag
+	}
+	r.latencies = map[string]time.Duration{active: 15 * time.Millisecond, other: 42 * time.Millisecond}
+	checkTime := e.Now().Add(-90 * time.Minute)
+	if err := os.WriteFile(filepath.Join(e.C.StateDir, "last-check.json"), encode(map[string]any{"time": checkTime, "success": true}), 0600); err != nil {
+		t.Fatal(err)
+	}
+	adds, override := len(r.adds), r.override
+	report, err := e.Keys()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Keys) != 2 || !report.Keys[0].Active || report.Keys[0].Tag != active || report.Keys[0].PingMS == nil || *report.Keys[0].PingMS != 15 || report.Keys[1].PingMS == nil || *report.Keys[1].PingMS != 42 {
+		t.Fatal("keys not ordered and measured correctly", report)
+	}
+	if report.LastCheckAgo == nil || *report.LastCheckAgo != 90*time.Minute || report.LastCheckSuccess == nil || !*report.LastCheckSuccess || report.SelectedAgo == nil || *report.SelectedAgo != 0 {
+		t.Fatal("keys timestamps are incorrect", report)
+	}
+	if len(r.adds) != adds || r.override != override || e.pending() {
+		t.Fatal("keys changed production runtime")
+	}
+	r.failedTags = map[string]bool{other: true}
+	report, err = e.Keys()
+	if err != nil || report.Keys[1].PingMS != nil || report.Keys[0].PingMS == nil {
+		t.Fatal("failed secondary ping not shown as unavailable", report, err)
+	}
+}
+
+func TestKeysSelectionAgeTracksOnlyActualSwitch(t *testing.T) {
+	e, r, raw := setupEngine(t)
+	*raw = uri(testUUID, "FI") + "\n" + uri("00000000-0000-4000-8000-000000000002", "DE")
+	if err := e.Sync(true); err != nil {
+		t.Fatal(err)
+	}
+	s, _ := e.state()
+	old := s.SelectedAt
+	e.Now = func() time.Time { return old.Add(2 * time.Hour) }
+	if err := e.Select(s.Selected); err != nil {
+		t.Fatal(err)
+	}
+	s, _ = e.state()
+	if !s.SelectedAt.Equal(old) {
+		t.Fatal("selecting the same key reset replacement age")
+	}
+	other := s.Active[0].Tag
+	if other == s.Selected {
+		other = s.Active[1].Tag
+	}
+	if err := e.Select(other); err != nil {
+		t.Fatal(err)
+	}
+	s, _ = e.state()
+	if s.Selected != other || !s.SelectedAt.Equal(e.Now()) || r.override != other {
+		t.Fatal("switch time was not persisted")
+	}
+	e.Now = func() time.Time { return old.Add(2*time.Hour + 25*time.Minute) }
+	report, err := e.Keys()
+	if err != nil || report.SelectedAgo == nil || *report.SelectedAgo != 25*time.Minute || report.Keys[0].Tag != other {
+		t.Fatal("last replacement age incorrect", report, err)
+	}
+}
+
+func TestKeysDoesNotGuessHistoricalSwitchTime(t *testing.T) {
+	e, _, _ := setupEngine(t)
+	if err := e.Sync(true); err != nil {
+		t.Fatal(err)
+	}
+	s, _ := e.state()
+	s.SelectedAt = time.Time{}
+	if err := atomicWrite(e.statePath(), encode(s), 0600); err != nil {
+		t.Fatal(err)
+	}
+	report, err := e.Keys()
+	if err != nil || report.SelectedAgo != nil {
+		t.Fatal("unknown old selection age must not be invented", report, err)
+	}
+}
+
 func TestStickyPolicySkipsRepeatedLatencyChecks(t *testing.T) {
 	e, r, _ := setupEngine(t)
 	e.C.SelectionPolicy = "sticky"
