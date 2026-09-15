@@ -7,7 +7,7 @@
 
 | Поле | По умолчанию | Значение |
 |---|---|---|
-| `subscription_url_file` | `/opt/etc/hotwatcher/subscription.url` | Один HTTPS URL в файле `600`/`400` |
+| `subscription_url_file` | `/opt/etc/hotwatcher/subscription.url` | Приватная копия для updater 0.2.4 и fallback до миграции; основной URL в `07_hotwatcher_api.json` |
 | `xray_binary` | `/opt/sbin/xray` | Установленный Xray с API CLI |
 | `api_address` | `127.0.0.1:10085` | Только loopback IP, не hostname/WAN/LAN |
 | `balancer_tag` | `proxy` | Существующий балансировщик, отдаваемый под управление |
@@ -26,6 +26,7 @@
 | `max_nodes` | `64` | Лимит активных уникальных VLESS, 1..256 |
 | `max_retired` | `128` | Лимит ещё не удалённых старых узлов, 1..1024 |
 | `preferred_name_contains` | пусто | Предпочтение при первичном выборе/исчезновении выбранного endpoint |
+| `selection_policy` | `latency` | `latency`: выбирать минимальную задержку HTTPS через VLESS при каждом sync; `sticky`: сохранять текущий узел |
 | `ca_file` | пусто | Дополнительный PEM bundle для HTTPS; проверка TLS не отключается |
 | `allow_tls_nodes` | `false` | Разрешить VLESS+TLS наряду с Reality |
 | `allow_loopback_http_for_tests` | `false` | Только для локальных тестов: HTTP на IP loopback |

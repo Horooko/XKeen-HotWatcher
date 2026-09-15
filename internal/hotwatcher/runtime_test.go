@@ -195,11 +195,12 @@ func TestIsolatedProbeProcessSuccessAndFailure(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	if e = x.Probe(p.Nodes[0]); e != nil {
+	latency, e := x.ProbeLatency(p.Nodes[0])
+	if e != nil || latency <= 0 {
 		t.Fatal(e)
 	}
 	t.Setenv("HW_PROBE_CODE", "403")
-	if e = x.Probe(p.Nodes[0]); e == nil {
+	if _, e = x.ProbeLatency(p.Nodes[0]); e == nil {
 		t.Fatal("403 accepted as healthy")
 	}
 }

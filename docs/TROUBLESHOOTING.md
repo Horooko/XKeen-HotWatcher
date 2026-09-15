@@ -5,6 +5,7 @@
 ```sh
 hotwatcher status
 hotwatcher doctor
+hotwatcher keys
 tail -n 40 /opt/var/lib/hotwatcher/events.jsonl
 cat /opt/var/lib/hotwatcher/last-check.json
 ```
@@ -18,7 +19,7 @@ cat /opt/var/lib/hotwatcher/last-check.json
 |---|---|
 | `handler_service_list_outbounds: false` | Проверить запущенный Xray, адрес localhost API и наличие HandlerService/lso в сборке |
 | `routing_service_balancer: false` | Проверить RoutingService и точное имя `proxy`; балancer должен реально существовать |
-| `private_subscription_url_file: false` | Путь, одна HTTPS строка, права 600/400, без кавычек вокруг URL внутри файла |
+| `private_subscription_url_file: false` | Проверь `hotwatcher.subscription_url` в `07_hotwatcher_api.json` и права файла `600`; до миграции проверь старый `subscription.url` |
 | `compatible_balancer_selector: false` | Селектор должен соответствовать префиксу `main--VL--hw-`, например `main--VL` |
 | `subscription download failed` | DNS/интернет/CA/редирект; программа не показывает URL в сообщении |
 | `subscription HTTP status 401/403` | Токен/доступ к подписке; старый конфиг не затирается |
@@ -72,5 +73,5 @@ sh scripts/support-report.sh
 
 Полученный файл `/tmp/hotwatcher-support-....txt` включает только время, архитектуру,
 version/status/doctor и последние очищенные события. Проверь его перед отправкой.
-**Не отправляй** `subscription.url`, `state.json`, `pending.json`, pre-migration backup,
+**Не отправляй** `07_hotwatcher_api.json`, `subscription.url`, `state.json`, `pending.json`, pre-migration backup,
 исходный crontab или сырой `xray api lso`: они могут содержать учётные данные.

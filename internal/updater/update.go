@@ -240,7 +240,7 @@ func protectedHashes() (map[string]string, error) {
 	if e != nil {
 		return nil, e
 	}
-	files := []string{"/opt/etc/hotwatcher/config.json", c.SubscriptionURLFile, filepath.Join(c.StateDir, "state.json"), filepath.Join(c.ConfigDir, c.GeneratedFile)}
+	files := []string{"/opt/etc/hotwatcher/config.json", c.SubscriptionURLFile, c.APIURLPath(), filepath.Join(c.StateDir, "state.json"), filepath.Join(c.ConfigDir, c.GeneratedFile)}
 	out := map[string]string{}
 	for i, p := range files {
 		h, e := hashFile(p)

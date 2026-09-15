@@ -17,12 +17,13 @@ type Retired struct {
 	After time.Time `json:"remove_after"`
 }
 type State struct {
-	Schema    int       `json:"schema"`
-	Selected  string    `json:"selected"`
-	Active    []Node    `json:"active"`
-	Retired   []Retired `json:"retired"`
-	DiskHash  string    `json:"disk_hash"`
-	UpdatedAt time.Time `json:"updated_at"`
+	Schema     int       `json:"schema"`
+	Selected   string    `json:"selected"`
+	SelectedAt time.Time `json:"selected_at,omitempty"`
+	Active     []Node    `json:"active"`
+	Retired    []Retired `json:"retired"`
+	DiskHash   string    `json:"disk_hash"`
+	UpdatedAt  time.Time `json:"updated_at"`
 }
 type Transaction struct {
 	Schema         int       `json:"schema"`
@@ -153,6 +154,15 @@ func (e *Engine) Sync(adopt bool) error {
 		if er = e.reconcile(s, tags); er != nil {
 			return er
 		}
+		if e.C.SelectionPolicy == "latency" {
+			selected, probeErr := e.fastest(nodes, s.Active, tags, s.Selected)
+			if probeErr != nil {
+				return probeErr
+			}
+			if selected != s.Selected {
+				return e.Select(selected)
+			}
+		}
 		e.event("unchanged", map[string]any{"active_nodes": len(s.Active), "ignored_non_vless": parsed.Skipped})
 		if e.C.AutoGC {
 			return e.gc(s)
@@ -180,16 +190,23 @@ func (e *Engine) Sync(adopt bool) error {
 		previousIdentity = legacyIdentity(oldFile, oldTarget)
 	}
 	selected := choose(nodes, oldTarget, previousIdentity, e.C.PreferredName)
-	if er = e.R.Validate(nodes, selected); er != nil {
-		return er
-	}
-	for _, n := range nodes {
-		_, known := findNode(oldNodes, n.Tag)
-		if !known || !tags[n.Tag] {
-			if er = e.R.Probe(n); er != nil {
-				return fmt.Errorf("candidate %s failed health check; old configuration kept: %w", n.Tag, er)
+	if e.C.SelectionPolicy == "latency" {
+		selected, er = e.fastest(nodes, oldNodes, tags, selected)
+		if er != nil {
+			return er
+		}
+	} else {
+		for _, n := range nodes {
+			_, known := findNode(oldNodes, n.Tag)
+			if !known || !tags[n.Tag] {
+				if er = e.R.Probe(n); er != nil {
+					return fmt.Errorf("candidate %s failed health check; old configuration kept: %w", n.Tag, er)
+				}
 			}
 		}
+	}
+	if er = e.R.Validate(nodes, selected); er != nil {
+		return er
 	}
 	retired := []Retired{}
 	if s != nil {
@@ -208,6 +225,11 @@ func (e *Engine) Sync(adopt bool) error {
 		return errors.New("retired pool limit reached; run gc outside a game session before another update")
 	}
 	next := State{Schema: 1, Active: nodes, Retired: retired, Selected: selected, UpdatedAt: e.Now()}
+	if s == nil || s.Selected != selected {
+		next.SelectedAt = next.UpdatedAt
+	} else {
+		next.SelectedAt = s.SelectedAt
+	}
 	next.DiskHash = digest(configBytes(nodes, selected))
 	t := Transaction{Schema: 1, Created: e.Now(), Previous: s, PreviousFile: oldFile, PreviousTarget: oldTarget, Next: next}
 	if s == nil {
@@ -233,6 +255,31 @@ func (e *Engine) Sync(adopt bool) error {
 		return fmt.Errorf("transaction pending before staging: %w", er)
 	}
 	return e.commit(&t, false)
+}
+
+// fastest measures the complete HTTPS request through each isolated VLESS
+// outbound. New or missing production nodes must pass before any transaction
+// starts; failed existing nodes are excluded from this round of selection.
+func (e *Engine) fastest(nodes, oldNodes []Node, tags map[string]bool, fallback string) (string, error) {
+	best := ""
+	bestLatency := time.Duration(0)
+	for _, n := range nodes {
+		latency, err := e.R.ProbeLatency(n)
+		if err != nil {
+			_, known := findNode(oldNodes, n.Tag)
+			if !known || !tags[n.Tag] {
+				return "", fmt.Errorf("candidate %s failed health check; old configuration kept: %w", n.Tag, err)
+			}
+			continue
+		}
+		if best == "" || latency < bestLatency || (latency == bestLatency && n.Tag == fallback) {
+			best, bestLatency = n.Tag, latency
+		}
+	}
+	if best == "" {
+		return "", errors.New("all active nodes failed HTTPS latency probes; old selection kept")
+	}
+	return best, nil
 }
 func (e *Engine) setVerified(tag string) error {
 	if er := e.R.Override(tag); er != nil {
@@ -408,6 +455,7 @@ func (e *Engine) reconcile(s *State, tags map[string]bool) error {
 			if er := e.R.Add(n); er != nil {
 				return fmt.Errorf("runtime reconciliation failed: %w", er)
 			}
+			tags[n.Tag] = true
 		}
 	}
 	b, er := e.R.Balance()
@@ -486,7 +534,7 @@ func (e *Engine) Status() (map[string]any, error) {
 	if er != nil {
 		return nil, er
 	}
-	m := map[string]any{"version": Version, "adopted": s != nil, "hold": e.held(), "pending_transaction": e.pending(), "automatic_gc": e.C.AutoGC, "update_interval_seconds": e.C.IntervalSeconds, "hotwatcher_restarts_xray": false}
+	m := map[string]any{"version": Version, "adopted": s != nil, "hold": e.held(), "pending_transaction": e.pending(), "automatic_gc": e.C.AutoGC, "selection_policy": e.C.SelectionPolicy, "update_interval_seconds": e.C.IntervalSeconds, "hotwatcher_restarts_xray": false}
 	if s != nil {
 		m["selected"] = s.Selected
 		m["active_nodes"] = len(s.Active)
@@ -641,6 +689,92 @@ func (e *Engine) Nodes() ([]map[string]any, error) {
 	sort.Slice(list, func(i, j int) bool { return list[i]["tag"].(string) < list[j]["tag"].(string) })
 	return list, nil
 }
+
+type KeyMeasurement struct {
+	Name   string
+	Tag    string
+	Active bool
+	PingMS *float64
+}
+
+type KeysReport struct {
+	Keys             []KeyMeasurement
+	LastCheckAgo     *time.Duration
+	LastCheckSuccess *bool
+	SelectedAgo      *time.Duration
+}
+
+// Keys measures each owned outbound through a separate loopback-only Xray
+// process. It reads the production pin but never changes it or the schedule.
+func (e *Engine) Keys() (KeysReport, error) {
+	report := KeysReport{}
+	s, err := e.state()
+	if err != nil {
+		return report, err
+	}
+	if s == nil {
+		return report, errors.New("not adopted; run adopt before keys")
+	}
+	bal, err := e.R.Balance()
+	if err != nil {
+		return report, err
+	}
+	if bal.Override != s.Selected {
+		return report, errors.New("live selection differs from saved state; run reconcile before keys")
+	}
+	node, ok := findNode(s.Active, s.Selected)
+	if !ok {
+		return report, errors.New("selected key is missing from active pool")
+	}
+	ordered := []Node{node}
+	for _, n := range s.Active {
+		if n.Tag != node.Tag {
+			ordered = append(ordered, n)
+		}
+	}
+	sort.Slice(ordered[1:], func(i, j int) bool {
+		a, b := ordered[i+1], ordered[j+1]
+		if a.Name == b.Name {
+			return a.Tag < b.Tag
+		}
+		return a.Name < b.Name
+	})
+	for _, n := range ordered {
+		m := KeyMeasurement{Name: safeLabel(n.Name), Tag: n.Tag, Active: n.Tag == s.Selected}
+		if latency, probeErr := e.R.ProbeLatency(n); probeErr == nil {
+			ms := float64(latency.Microseconds()) / 1000
+			m.PingMS = &ms
+		}
+		report.Keys = append(report.Keys, m)
+	}
+	now := e.Now()
+	if d, ok := elapsed(now, s.SelectedAt); ok {
+		report.SelectedAgo = &d
+	}
+	b, err := readPrivateOptional(filepath.Join(e.C.StateDir, "last-check.json"))
+	if err == nil {
+		var check struct {
+			Time    time.Time `json:"time"`
+			Success bool      `json:"success"`
+		}
+		if json.Unmarshal(b, &check) == nil {
+			if d, ok := elapsed(now, check.Time); ok {
+				report.LastCheckAgo = &d
+				report.LastCheckSuccess = &check.Success
+			}
+		}
+	} else if !os.IsNotExist(err) {
+		return report, errors.New("cannot read private last-check marker")
+	}
+	return report, nil
+}
+
+func elapsed(now, then time.Time) (time.Duration, bool) {
+	if then.IsZero() || now.Before(then) {
+		return 0, false
+	}
+	return now.Sub(then), true
+}
 func (e *Engine) Select(tag string) error {
 	if e.pending() {
 		return errors.New("pending transaction: selection refused")
@@ -666,6 +800,9 @@ func (e *Engine) Select(tag string) error {
 	next := *s
 	next.Selected = tag
 	next.UpdatedAt = e.Now()
+	if tag != s.Selected {
+		next.SelectedAt = next.UpdatedAt
+	}
 	next.DiskHash = digest(configBytes(next.Active, tag))
 	t := Transaction{Schema: 1, Created: e.Now(), Previous: s, PreviousFile: old, PreviousTarget: s.Selected, Next: next}
 	if len(encode(t)) > 16*1024*1024 {

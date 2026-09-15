@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	hw "local/xkeen-hot-watcher/internal/hotwatcher"
 	"local/xkeen-hot-watcher/internal/updater"
 	"os"
@@ -20,6 +21,7 @@ func usage() {
 Usage: hotwatcher [--config /opt/etc/hotwatcher/config.json] COMMAND
 
 config-example   Print default configuration (no secrets)
+url set|migrate  Save URL in 07_hotwatcher_api.json; set reads standard input
 version [--json] Print version and release build info
 update COMMAND   Signed software update: check|status|download|apply|enable|disable|pause|pin|unpin|retry
 doctor           Read-only local/API capability checks
@@ -28,6 +30,7 @@ adopt            First migration: backup existing subscription file and hot-appl
 sync             Fetch/validate/probe/apply subscription without production restart
 status           Redacted state and API status
 nodes            Owned node tags (no credentials)
+keys             Active key first; fresh HTTPS latency and elapsed check/selection time
 select TAG       Explicitly pin one active node, after a candidate probe
 reconcile        Restore saved active pool and pin via API, without downloading
 hold on|off      Pause downloads/application/GC, but keep restoring saved pin
@@ -129,6 +132,22 @@ func run() error {
 	}
 	err = hw.WithLock(c, func() error {
 		switch command {
+		case "url":
+			if len(args) != 2 {
+				return errors.New("url requires set or migrate")
+			}
+			switch args[1] {
+			case "migrate":
+				return c.MigrateSubscriptionURL()
+			case "set":
+				b, er := io.ReadAll(io.LimitReader(os.Stdin, 8193))
+				if er != nil || len(b) > 8192 {
+					return errors.New("cannot read subscription URL from standard input")
+				}
+				return c.SetSubscriptionURL(string(b))
+			default:
+				return errors.New("url requires set or migrate")
+			}
 		case "doctor":
 			v, er := engine.Doctor()
 			printJSON(v)
@@ -149,6 +168,12 @@ func run() error {
 			v, er := engine.Nodes()
 			if er == nil {
 				printJSON(v)
+			}
+			return er
+		case "keys":
+			v, er := engine.Keys()
+			if er == nil {
+				printKeys(v)
 			}
 			return er
 		case "adopt":
@@ -182,10 +207,61 @@ func run() error {
 	})
 	if err != nil {
 		hw.SafeLog(c, "command_failed", map[string]any{"command": command, "message": err.Error()})
-	} else if command != "doctor" && command != "status" && command != "plan" && command != "nodes" {
+	} else if command != "doctor" && command != "status" && command != "plan" && command != "nodes" && command != "keys" {
 		fmt.Println("OK (production Xray was not restarted)")
 	}
 	return err
+}
+
+func printKeys(v hw.KeysReport) {
+	if len(v.Keys) == 0 {
+		fmt.Println("Ключей нет")
+		return
+	}
+	active := v.Keys[0]
+	fmt.Printf("Активный ключ: %s [%s] — %s\n", active.Name, active.Tag, pingText(active.PingMS))
+	if v.LastCheckAgo == nil {
+		fmt.Println("С последней проверки подписки: нет данных")
+	} else {
+		result := "ошибка"
+		if v.LastCheckSuccess != nil && *v.LastCheckSuccess {
+			result = "успешно"
+		}
+		fmt.Printf("С последней проверки подписки: %s (%s)\n", ageText(*v.LastCheckAgo), result)
+	}
+	if v.SelectedAgo == nil {
+		fmt.Println("С последней смены ключа: нет данных")
+	} else {
+		fmt.Printf("С последней смены ключа: %s\n", ageText(*v.SelectedAgo))
+	}
+	if len(v.Keys) > 1 {
+		fmt.Println("Остальные ключи:")
+		for _, key := range v.Keys[1:] {
+			fmt.Printf("- %s [%s] — %s\n", key.Name, key.Tag, pingText(key.PingMS))
+		}
+	}
+}
+
+func pingText(ms *float64) string {
+	if ms == nil {
+		return "недоступен"
+	}
+	return fmt.Sprintf("%.1f мс", *ms)
+}
+
+func ageText(d time.Duration) string {
+	seconds := int64(d / time.Second)
+	days, hours, minutes := seconds/86400, (seconds%86400)/3600, (seconds%3600)/60
+	if days > 0 {
+		return fmt.Sprintf("%d д %d ч %d мин", days, hours, minutes)
+	}
+	if hours > 0 {
+		return fmt.Sprintf("%d ч %d мин", hours, minutes)
+	}
+	if minutes > 0 {
+		return fmt.Sprintf("%d мин %d сек", minutes, seconds%60)
+	}
+	return fmt.Sprintf("%d сек", seconds)
 }
 func daemon(c hw.Config, e *hw.Engine) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

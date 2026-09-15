@@ -51,5 +51,5 @@ if [ ! -e /opt/etc/hotwatcher/updates.json ] && [ -x /opt/sbin/hotwatcher-update
 fi
 printf '%s\n' \
  'Installed. Xray, firewall and existing cron entries were not changed.' \
- 'Next: read README.md, configure subscription.url and enable localhost API.' \
+ 'Next: read README.md, configure subscription URL in 07_hotwatcher_api.json and enable localhost API.' \
  'The service is disabled until /opt/etc/hotwatcher/enabled is created.'

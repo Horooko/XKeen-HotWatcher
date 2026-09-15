@@ -2,12 +2,15 @@ package main
 
 import (
 	"encoding/json"
+	"io"
 	hw "local/xkeen-hot-watcher/internal/hotwatcher"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 )
 
 func invoke(t *testing.T, args ...string) error {
@@ -25,6 +28,31 @@ func TestCLIInformationalCommands(t *testing.T) {
 	}
 	if e := invoke(t); e != nil {
 		t.Fatal(e)
+	}
+}
+
+func TestKeysOutputStartsWithActiveKey(t *testing.T) {
+	activePing, otherPing := 27.5, 61.2
+	checkAgo, selectedAgo := 15*time.Minute+4*time.Second, 2*time.Hour
+	success := true
+	report := hw.KeysReport{Keys: []hw.KeyMeasurement{{Name: "FI", Tag: "active", Active: true, PingMS: &activePing}, {Name: "DE", Tag: "other", PingMS: &otherPing}}, LastCheckAgo: &checkAgo, LastCheckSuccess: &success, SelectedAgo: &selectedAgo}
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := os.Stdout
+	os.Stdout = w
+	printKeys(report)
+	w.Close()
+	os.Stdout = old
+	b, err := io.ReadAll(r)
+	r.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := string(b)
+	if !strings.HasPrefix(lines, "Активный ключ: FI [active] — 27.5 мс\n") || !strings.Contains(lines, "С последней проверки подписки: 15 мин 4 сек (успешно)") || !strings.Contains(lines, "С последней смены ключа: 2 ч 0 мин") || !strings.Contains(lines, "- DE [other] — 61.2 мс") {
+		t.Fatal(lines)
 	}
 }
 func testConfig(t *testing.T) string {
