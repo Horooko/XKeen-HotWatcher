@@ -1,15 +1,18 @@
 name: signed-release
 on:
-  push:
-    tags: ['v*']
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing Git tag without a published Release
+        description: Existing Git tag with an empty published Release (retry)
         required: true
         type: string
 permissions:
   contents: read
+concurrency:
+  group: signed-release-${{ github.event.inputs.tag || github.event.release.tag_name }}
+  cancel-in-progress: false
 jobs:
   release:
     if: github.repository == 'Horooko/XKeen-HotWatcher'
@@ -20,7 +23,7 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
+          ref: ${{ github.event.inputs.tag || github.event.release.tag_name }}
           persist-credentials: false
       - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
         with:
@@ -28,9 +31,10 @@ jobs:
           cache: false
       - name: Validate, build, sign and publish
         env:
-          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          RELEASE_TAG: ${{ github.event.inputs.tag || github.event.release.tag_name }}
           UPDATE_SIGNING_SEED: ${{ secrets.UPDATE_SIGNING_SEED }}
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
@@ -42,12 +46,21 @@ jobs:
             exit 1
           fi
           if [[ -z "$UPDATE_SIGNING_SEED" ]]; then
-            echo "::error::Set UPDATE_SIGNING_SEED in the signed-release GitHub environment before pushing a release tag."
+            echo "::error::Set UPDATE_SIGNING_SEED in the signed-release GitHub environment before publishing a Release."
             exit 1
           fi
           go run ./cmd/release-tool verify-seed-env
-          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            echo "::error::Release $RELEASE_TAG already exists. Push a new tag; do not create an empty Release in the GitHub UI."
+          release_json="$(gh api "repos/$GH_REPO/releases/tags/$RELEASE_TAG")"
+          if ! jq -e --arg tag "$RELEASE_TAG" '.tag_name == $tag and .draft == false and .prerelease == false' <<< "$release_json" >/dev/null; then
+            echo "::error::Release $RELEASE_TAG must be published, stable, and point to the checked-out tag."
+            exit 1
+          fi
+          if jq -e '.immutable == true' <<< "$release_json" >/dev/null; then
+            echo "::error::Published Release $RELEASE_TAG is immutable; GitHub cannot add assets after publication. Disable immutable releases before creating the next Release."
+            exit 1
+          fi
+          if ! jq -e '.assets | length == 0' <<< "$release_json" >/dev/null; then
+            echo "::error::Release $RELEASE_TAG already has uploaded assets. Use a new version rather than replacing signed files."
             exit 1
           fi
           go test ./...
@@ -77,8 +90,7 @@ jobs:
           "release-out/hotwatcher_${RELEASE_TAG}_linux_amd64" version --json | jq -e --arg version "$version" --arg commit "$commit" '.version==$version and .commit==$commit and .arch=="amd64" and .dirty==false'
           mv release-manifest.json release-manifest.sig release-out/
           (cd release-out && sha256sum hotwatcher_* xkeen-hotwatcher_* release-manifest.json release-manifest.sig > SHA256SUMS)
-          gh release create "$RELEASE_TAG" release-out/hotwatcher_* release-out/xkeen-hotwatcher_* release-out/release-manifest.json release-out/release-manifest.sig release-out/SHA256SUMS --draft --verify-tag --title "$RELEASE_TAG"
+          gh release upload "$RELEASE_TAG" release-out/hotwatcher_* release-out/xkeen-hotwatcher_* release-out/release-manifest.json release-out/release-manifest.sig release-out/SHA256SUMS
           mkdir release-verify
           gh release download "$RELEASE_TAG" --dir release-verify
           (cd release-verify && sha256sum -c SHA256SUMS)
-          gh release edit "$RELEASE_TAG" --draft=false
