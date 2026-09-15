@@ -7,7 +7,7 @@
 
 | Поле | По умолчанию | Значение |
 |---|---|---|
-| `subscription_url_file` | `/opt/etc/hotwatcher/subscription.url` | Один HTTPS URL в файле `600`/`400` |
+| `subscription_url_file` | `/opt/etc/hotwatcher/subscription.url` | Приватная копия для updater 0.2.4 и fallback до миграции; основной URL в `07_hotwatcher_api.json` |
 | `xray_binary` | `/opt/sbin/xray` | Установленный Xray с API CLI |
 | `api_address` | `127.0.0.1:10085` | Только loopback IP, не hostname/WAN/LAN |
 | `balancer_tag` | `proxy` | Существующий балансировщик, отдаваемый под управление |

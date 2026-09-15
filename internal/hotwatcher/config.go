@@ -120,13 +120,91 @@ func allowedURL(s string, local bool) bool {
 	return local && u.Scheme == "http" && ip != nil && ip.IsLoopback()
 }
 func (c Config) URL() (string, error) {
+	if s, found, err := c.apiURL(); found || err != nil {
+		return s, err
+	}
 	b, e := readPrivate(c.SubscriptionURLFile, 8192)
 	if e != nil {
 		return "", errors.New("cannot read private subscription URL file")
 	}
-	s := strings.TrimSpace(string(b))
+	return c.validateURL(strings.TrimSpace(string(b)))
+}
+
+func (c Config) APIURLPath() string {
+	return filepath.Join(c.ConfigDir, "07_hotwatcher_api.json")
+}
+
+func (c Config) validateURL(s string) (string, error) {
 	if strings.ContainsAny(s, "\r\n\t ") || !allowedURL(s, c.AllowLoopbackHTTP) {
 		return "", errors.New("subscription URL must be one HTTPS URL, without userinfo or fragment")
 	}
 	return s, nil
+}
+
+// Xray ignores the Hot Watcher top-level block, while this program reads it.
+// An absent block preserves compatibility with installations predating v0.2.5.
+func (c Config) apiURL() (string, bool, error) {
+	path := c.APIURLPath()
+	b, err := readLimited(path, 1024*1024)
+	if os.IsNotExist(err) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, errors.New("cannot read Hot Watcher API fragment")
+	}
+	var fragment struct {
+		HotWatcher struct {
+			SubscriptionURL string `json:"subscription_url"`
+		} `json:"hotwatcher"`
+	}
+	if err = json.Unmarshal(b, &fragment); err != nil {
+		return "", false, errors.New("invalid Hot Watcher API fragment JSON")
+	}
+	if fragment.HotWatcher.SubscriptionURL == "" {
+		return "", false, nil
+	}
+	if _, err = readPrivate(path, 1024*1024); err != nil {
+		return "", true, errors.New("API fragment containing subscription URL must have permissions 0600 or 0400")
+	}
+	s, err := c.validateURL(fragment.HotWatcher.SubscriptionURL)
+	return s, true, err
+}
+
+// SetSubscriptionURL preserves the existing Xray API object and writes a
+// private legacy copy required by updater binaries installed before v0.2.5.
+func (c Config) SetSubscriptionURL(s string) error {
+	s, err := c.validateURL(strings.TrimSpace(s))
+	if err != nil {
+		return err
+	}
+	path := c.APIURLPath()
+	b, err := readLimited(path, 1024*1024)
+	if err != nil {
+		return errors.New("cannot read Hot Watcher API fragment; run setup-api.sh first")
+	}
+	var fragment map[string]json.RawMessage
+	if err = json.Unmarshal(b, &fragment); err != nil || fragment == nil || len(fragment["api"]) == 0 {
+		return errors.New("API fragment must be a JSON object containing the existing Xray api")
+	}
+	var api map[string]any
+	if err = json.Unmarshal(fragment["api"], &api); err != nil || api == nil {
+		return errors.New("invalid Xray api object; fragment left unchanged")
+	}
+	fragment["hotwatcher"], _ = json.Marshal(map[string]string{"subscription_url": s})
+	// Keep the old updater's required file before switching the canonical source.
+	if err = atomicWrite(c.SubscriptionURLFile, []byte(s+"\n"), 0600); err != nil {
+		return errors.New("cannot save private updater-compatible subscription URL")
+	}
+	if err = atomicWrite(path, encode(fragment), 0600); err != nil {
+		return errors.New("cannot save Hot Watcher API fragment")
+	}
+	return nil
+}
+
+func (c Config) MigrateSubscriptionURL() error {
+	b, err := readPrivate(c.SubscriptionURLFile, 8192)
+	if err != nil {
+		return errors.New("cannot read old private subscription URL")
+	}
+	return c.SetSubscriptionURL(strings.TrimSpace(string(b)))
 }

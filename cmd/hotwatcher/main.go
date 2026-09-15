@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	hw "local/xkeen-hot-watcher/internal/hotwatcher"
 	"local/xkeen-hot-watcher/internal/updater"
 	"os"
@@ -20,6 +21,7 @@ func usage() {
 Usage: hotwatcher [--config /opt/etc/hotwatcher/config.json] COMMAND
 
 config-example   Print default configuration (no secrets)
+url set|migrate  Save URL in 07_hotwatcher_api.json; set reads standard input
 version [--json] Print version and release build info
 update COMMAND   Signed software update: check|status|download|apply|enable|disable|pause|pin|unpin|retry
 doctor           Read-only local/API capability checks
@@ -129,6 +131,22 @@ func run() error {
 	}
 	err = hw.WithLock(c, func() error {
 		switch command {
+		case "url":
+			if len(args) != 2 {
+				return errors.New("url requires set or migrate")
+			}
+			switch args[1] {
+			case "migrate":
+				return c.MigrateSubscriptionURL()
+			case "set":
+				b, er := io.ReadAll(io.LimitReader(os.Stdin, 8193))
+				if er != nil || len(b) > 8192 {
+					return errors.New("cannot read subscription URL from standard input")
+				}
+				return c.SetSubscriptionURL(string(b))
+			default:
+				return errors.New("url requires set or migrate")
+			}
 		case "doctor":
 			v, er := engine.Doctor()
 			printJSON(v)

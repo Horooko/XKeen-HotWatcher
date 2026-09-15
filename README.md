@@ -88,11 +88,15 @@ sh scripts/set-url.sh
 ```
 
 Вставь URL и нажми Enter. Он не попадёт в аргументы процесса или историю shell.
-Файл: `/opt/etc/hotwatcher/subscription.url`, права `600`. Не присылай его в диагностику.
-Альтернатива: открыть этот файл через WinSCP, оставить одну строку с HTTPS URL, затем:
+Ссылка сохраняется в блоке `hotwatcher.subscription_url` файла
+`/opt/etc/xray/configs/07_hotwatcher_api.json` с правами `600`. Скрипт создаст API-фрагмент,
+если его ещё нет; это **не перезапускает Xray**. Приватная копия в
+`/opt/etc/hotwatcher/subscription.url` остаётся для уже установленного updater 0.2.4.
+Не присылай эти файлы в диагностику. При ручном редактировании через WinSCP проверь:
 
 ```sh
-chmod 600 /opt/etc/hotwatcher/subscription.url
+chmod 600 /opt/etc/xray/configs/07_hotwatcher_api.json
+/opt/sbin/hotwatcher doctor
 ```
 
 Настройки: `/opt/etc/hotwatcher/config.json`. По умолчанию разрешён VLESS+Reality;
@@ -112,7 +116,9 @@ xkeen -restart
 xkeen -status
 ```
 
-Скрипт создаёт `07_hotwatcher_api.json`, только `127.0.0.1:10085`, без публикации в LAN/WAN.
+Скрипт создаёт `07_hotwatcher_api.json`, если его ещё нет; API слушает только
+`127.0.0.1:10085`, без публикации в LAN/WAN. Xray игнорирует отдельный блок
+`hotwatcher`, а Hot Watcher читает из него ссылку подписки.
 Если API уже настроен другим инструментом, скрипт **откажется создавать второй объект**.
 Тогда объедини `HandlerService` и `RoutingService` в существующем API и проверь
 `api_address` в конфиге Hot Watcher: [инструкция](docs/INSTALLATION.md).

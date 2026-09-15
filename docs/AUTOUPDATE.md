@@ -19,12 +19,16 @@ Release `v0.2.5` выполните в Entware shell:
 /opt/sbin/hotwatcher update check
 /opt/sbin/hotwatcher update apply
 /opt/sbin/hotwatcher version --json
+/opt/sbin/hotwatcher url migrate
 /opt/sbin/hotwatcher sync
 /opt/sbin/hotwatcher status
 ```
 
 `apply` самостоятельно скачает raw ARM64 asset, проверит подпись и хеш и заменит
 только бинарник Hot Watcher. Повторять `install.sh` для этого обновления не нужно.
+`url migrate` сохранит текущую ссылку из старого приватного файла в
+`07_hotwatcher_api.json`, сохранив объект Xray API. Старый файл остаётся приватной
+копией для установленного updater; не удаляй его.
 Для автоматического выбора узла после обновления нужно завершить `adopt` и включить
 Hot Watcher по инструкции в README. Если служба включена, updater проверит готовность
 нового процесса и при её отсутствии вернёт старую программу.

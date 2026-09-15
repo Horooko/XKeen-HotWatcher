@@ -57,7 +57,7 @@ CA bundle требуется для HTTPS. Программа дополните
 |---|---|
 | `/opt/sbin/hotwatcher` | Новая программа |
 | `/opt/etc/hotwatcher/config.json` | Пользовательские настройки |
-| `/opt/etc/hotwatcher/subscription.url` | Секретный URL, одна строка |
+| `/opt/etc/hotwatcher/subscription.url` | Приватная копия для установленного updater 0.2.4 и fallback до миграции |
 | `/opt/etc/hotwatcher/enabled` | Разрешение автозапуска службы |
 | `/opt/etc/init.d/S99hotwatcher` | Только служба Hot Watcher |
 | `/opt/var/lib/hotwatcher/state.json` | Приватные активные/retired узлы и pin |
@@ -65,7 +65,7 @@ CA bundle требуется для HTTPS. Программа дополните
 | `/opt/var/lib/hotwatcher/events.jsonl` | Очищенные события, ротация 1 MiB + 1 файл |
 | `/opt/var/lib/hotwatcher/last-check.json` | Время/результат последнего планового sync |
 | `/opt/etc/xray/configs/04_outbounds.main.json` | Управляемый файл, заменяется после успешного hot-apply |
-| `/opt/etc/xray/configs/07_hotwatcher_api.json` | API fragment, создаётся отдельным явным шагом |
+| `/opt/etc/xray/configs/07_hotwatcher_api.json` | API fragment и основной URL в `hotwatcher.subscription_url`; с URL права `600` |
 
 `05_routing.json`, `03_inbounds.json`, `04_outbounds.json` и netfilter не переписываются.
 Настройка cron для геофайлов также не меняется, кроме явного удаления строк старого watcher.
