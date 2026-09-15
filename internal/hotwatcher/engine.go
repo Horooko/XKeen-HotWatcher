@@ -699,12 +699,39 @@ func WithLock(c Config, fn func() error) error {
 		return err
 	}
 	defer unlock()
+	if _, err := os.Lstat(filepath.Join("/opt/var/lib/hotwatcher-updater", "maintenance.json")); err == nil {
+		return errors.New("software update maintenance in progress")
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	if _, err := os.Lstat(filepath.Join("/opt/var/lib/hotwatcher-updater", "pending-update.json")); err == nil {
+		return errors.New("pending software update requires recovery")
+	} else if !os.IsNotExist(err) {
+		return err
+	}
 	return fn()
 }
 func SafeLog(c Config, event string, fields map[string]any) { _ = logEvent(c.StateDir, event, fields) }
 func WriteLastCheck(c Config, ok bool) {
 	_ = atomicWrite(filepath.Join(c.StateDir, "last-check.json"), encode(map[string]any{"time": time.Now().UTC(), "success": ok}), 0600)
 }
+func NextSubscriptionCheck(c Config) time.Time {
+	b, err := readPrivateOptional(filepath.Join(c.StateDir, "next-subscription-check.json"))
+	if err != nil {
+		return time.Time{}
+	}
+	var v struct {
+		Next time.Time `json:"next"`
+	}
+	if json.Unmarshal(b, &v) != nil {
+		return time.Time{}
+	}
+	return v.Next
+}
+func WriteNextSubscriptionCheck(c Config, next time.Time) {
+	_ = atomicWrite(filepath.Join(c.StateDir, "next-subscription-check.json"), encode(map[string]any{"next": next}), 0600)
+}
+func readPrivateOptional(path string) ([]byte, error) { return readPrivate(path, 4096) }
 
 func safeLabel(s string) string {
 	if strings.Contains(s, "://") {

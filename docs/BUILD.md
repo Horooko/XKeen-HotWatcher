@@ -9,7 +9,9 @@ go test -race -cover ./...
 go vet ./...
 CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags='-s -w' -o dist/hotwatcher-linux-arm64 ./cmd/hotwatcher
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o dist/hotwatcher-linux-amd64 ./cmd/hotwatcher
-(cd dist && sha256sum hotwatcher-linux-* > SHA256SUMS)
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags='-s -w' -o dist/hotwatcher-updater-linux-arm64 ./cmd/hotwatcher-updater
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o dist/hotwatcher-updater-linux-amd64 ./cmd/hotwatcher-updater
+(cd dist && sha256sum hotwatcher-linux-* hotwatcher-updater-linux-* > SHA256SUMS)
 ```
 
 Или `make test`, `make build`. Исходники могут быть расширены для других Linux-архитектур,
@@ -33,6 +35,7 @@ examples/                             Конфигурации и фиктивн
 end-to-end smoke с реальным сервером. Не заменяй ошибки неизвестных параметров тихим
 игнорированием: это может сломать transport/security.
 
-CI GitHub Actions выполняет tests/vet/build. Публикация в GitHub, создание remote repo
-или загрузка release этим архивом автоматически не выполняются.
-SHA256SUMS проверяет целостность файлов, но не является цифровой подписью издателя.
+CI GitHub Actions выполняет tests/vet/build. Отдельный tag-triggered workflow публикует
+подписанные Releases при наличии защищённого signing secret; см. [RELEASING.md](RELEASING.md).
+SHA256SUMS проверяет целостность файлов, но подлинность обновления программы определяется
+Ed25519-подписью manifest.

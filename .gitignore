@@ -1,4 +1,5 @@
 /dist/hotwatcher-linux-*
+/dist/hotwatcher-updater-linux-*
 *.test
 coverage.out
 subscription.url

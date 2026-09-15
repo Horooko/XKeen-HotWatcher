@@ -1,0 +1,70 @@
+name: signed-release
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing signed release tag
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  release:
+    if: github.repository == 'Horooko/XKeen-HotWatcher'
+    runs-on: ubuntu-latest
+    environment: signed-release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+          persist-credentials: false
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
+        with:
+          go-version: '1.27.1'
+          cache: false
+      - name: Validate, build, sign and publish
+        env:
+          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          UPDATE_SIGNING_SEED: ${{ secrets.UPDATE_SIGNING_SEED }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          test "$(git describe --tags --exact-match)" = "$RELEASE_TAG"
+          test -n "$UPDATE_SIGNING_SEED"
+          go test ./...
+          go vet ./...
+          version="${RELEASE_TAG#v}"
+          IFS=. read -r major minor patch <<< "$version"
+          sequence=$((major*1000000+minor*1000+patch))
+          commit="$(git rev-parse HEAD)"
+          built="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          mkdir -p release-out
+          for arch in arm64 amd64; do
+            CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath -ldflags="-s -w -X local/xkeen-hot-watcher/internal/hotwatcher.Version=$version -X local/xkeen-hot-watcher/internal/updater.Commit=$commit -X local/xkeen-hot-watcher/internal/updater.BuildTime=$built -X local/xkeen-hot-watcher/internal/updater.Dirty=false" -o "release-out/hotwatcher_${RELEASE_TAG}_linux_${arch}" ./cmd/hotwatcher
+            CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath -ldflags='-s -w' -o "release-out/hotwatcher-updater_linux_${arch}" ./cmd/hotwatcher-updater
+            mkdir -p "release-out/package-${arch}/dist" "release-out/package-${arch}/scripts"
+            cp "release-out/hotwatcher_${RELEASE_TAG}_linux_${arch}" "release-out/package-${arch}/dist/hotwatcher-linux-${arch}"
+            cp "release-out/hotwatcher-updater_linux_${arch}" "release-out/package-${arch}/dist/hotwatcher-updater-linux-${arch}"
+            cp install.sh "release-out/package-${arch}/"
+            cp README.md LICENSE "release-out/package-${arch}/"
+            cp -r docs "release-out/package-${arch}/"
+            cp scripts/S99hotwatcher scripts/S98hotwatcher-updater "release-out/package-${arch}/scripts/"
+            (cd "release-out/package-${arch}/dist" && sha256sum * > SHA256SUMS)
+            tar -czf "release-out/xkeen-hotwatcher_${RELEASE_TAG}_linux_${arch}.tar.gz" -C "release-out/package-${arch}" .
+          done
+          go run ./cmd/release-tool manifest "$RELEASE_TAG" "$commit" "$sequence" "release-out/hotwatcher_${RELEASE_TAG}_linux_arm64" "release-out/hotwatcher_${RELEASE_TAG}_linux_amd64"
+          go run ./cmd/release-tool sign-env release-manifest.json release-manifest.sig
+          go run ./cmd/release-tool verify release-manifest.json release-manifest.sig
+          "release-out/hotwatcher_${RELEASE_TAG}_linux_amd64" version --json | jq -e --arg version "$version" --arg commit "$commit" '.version==$version and .commit==$commit and .arch=="amd64" and .dirty==false'
+          mv release-manifest.json release-manifest.sig release-out/
+          (cd release-out && sha256sum hotwatcher_* xkeen-hotwatcher_* release-manifest.json release-manifest.sig > SHA256SUMS)
+          gh release create "$RELEASE_TAG" release-out/hotwatcher_* release-out/xkeen-hotwatcher_* release-out/release-manifest.json release-out/release-manifest.sig release-out/SHA256SUMS --draft --verify-tag --title "$RELEASE_TAG"
+          mkdir release-verify
+          gh release download "$RELEASE_TAG" --dir release-verify
+          (cd release-verify && sha256sum -c SHA256SUMS)
+          gh release edit "$RELEASE_TAG" --draft=false
