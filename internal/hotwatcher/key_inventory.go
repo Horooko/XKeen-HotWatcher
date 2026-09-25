@@ -67,7 +67,7 @@ func (e *Engine) KeysSnapshot() (KeyInventory, error) {
 		return report, err
 	}
 	if s == nil {
-		return report, errors.New("not adopted; run adopt before keys")
+		return report, errors.New("Hot Watcher ещё не подключён; выполните hotwatcher adopt")
 	}
 	report.Selected = s.Selected
 	if age, ok := elapsed(e.Now(), s.SelectedAt); ok {

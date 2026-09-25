@@ -31,6 +31,7 @@ type Runtime interface {
 	Validate([]Node, string) error
 	Probe(Node) error
 	ProbeLatency(Node) (time.Duration, error)
+	URLTest(Node, []string) (URLTestReport, error)
 }
 type Xray struct{ C Config }
 

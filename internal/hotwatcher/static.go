@@ -109,6 +109,9 @@ func (e *Engine) StopToStatic() error {
 	if err = e.R.Probe(node); err != nil {
 		return errors.New("static VLESS fallback failed HTTPS probe; subscription kept")
 	}
+	if _, err = e.urlTestNode(node); err != nil {
+		return errors.New("static VLESS fallback failed URL Test; subscription kept")
+	}
 	tags, err := e.R.List()
 	if err != nil {
 		return err

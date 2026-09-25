@@ -16,12 +16,15 @@
 | `generated_file` | `04_outbounds.main.json` | Только `04_outbounds.NAME.json`; не статический `04_outbounds.json` |
 | `state_dir` | `/opt/var/lib/hotwatcher` | Приватный каталог `700`, вне confdir |
 | `probe_urls` | `https://www.gstatic.com/generate_204` | От 1 до 4 URL; достаточно HTTP 204 хотя бы от одного |
+| `url_test_sites` | Google, ChatGPT, YouTube, Discord, Telegram, GitHub | От 1 до 12 публичных HTTPS-доменов; все должны открыться перед выбором ключа. Web UI сохраняет изменения отдельно в `state_dir/url-test-sites.json` и применяет их сразу |
+| `webui_enabled` | `true` | Запускать Web UI вместе со службой Hot Watcher |
+| `webui_listen` | `127.0.0.1:8787` | Адрес Web UI; только IP loopback или частной локальной сети |
 | `probe_timeout_seconds` | `12` | Таймаут одной HTTP-пробы, 1..120 |
 | `http_timeout_seconds` | `30` | Загрузка подписки, 1..120 |
 | `api_timeout_seconds` | `10` | API deadline; на сам CLI есть небольшой дополнительный запас |
 | `interval_seconds` | `1800` | Проверка подписки; минимум 60 |
 | `reconcile_seconds` | `60` | Восстановление pin/pool после потери runtime; минимум 10 |
-| `key_check_interval_seconds` | `300` | Две HTTPS-пробы активного ключа; при отказе выбор самого быстрого из сохранённых; 60..3600 |
+| `key_check_interval_seconds` | `300` | Быстрая HTTPS-проба и URL Test активного ключа; при отказе выбор работающего из сохранённых; 60..3600 |
 | `grace_seconds` | `1800` | Минимальное время до `gc`; минимум 60 |
 | `automatic_gc` | `false` | Автоудаление retired при очередном успешном неизменном sync |
 | `max_nodes` | `64` | Лимит активных уникальных VLESS, 1..256 |
