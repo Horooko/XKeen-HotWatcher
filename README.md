@@ -1,4 +1,4 @@
-# XKeen Hot Watcher 0.2.8
+# XKeen Hot Watcher 0.2.9
 
 Обновление VLESS-подписки в **работающем Xray без `xkeen -restart`**.
 Проект подготовлен для существующей схемы XKeen 2.x / Entware / Linux aarch64:
@@ -194,6 +194,8 @@ sh scripts/enable-service.sh
 в `:00` и `:30`. Он настраивается полем `interval_seconds`.
 
 ## Повседневные команды
+
+Автоматический выбор DNS для **встроенного DNS Xray** включается отдельно: `hotwatcher dns test`, затем `hotwatcher dns auto on`. После проверки `xkeen -xtest` нужен один ручной `xkeen -restart` вне игры. При каждом DNS-запросе Xray выбирает первый успешный ответ из Cloudflare и Google DoH. Настройка DNS самого Keenetic, DHCP и Karing не меняется; Yandex в списке нет. Откат: `hotwatcher dns auto off` и ручной перезапуск. Условия, ограничения и проверка маршрута: [DNS_AUTO.md](docs/DNS_AUTO.md).
 
 ```sh
 hotwatcher status          # Состояние, выбранный тег, совпадение runtime/disk
