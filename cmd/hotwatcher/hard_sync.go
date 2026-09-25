@@ -76,6 +76,11 @@ func waitXrayStopped(engine *hw.Engine, timeout time.Duration) error {
 // Download and probes run while XKeen is off. Parsed nodes stay in memory and
 // are handed to the ordinary transaction after XKeen returns.
 func hardSync(c hw.Config, engine *hw.Engine) (err error) {
+	if progress, progressErr := engine.HardSyncProgress(); progressErr != nil {
+		return progressErr
+	} else if progress != nil {
+		return errors.New("предыдущий hard-sync не завершён; проверьте hotwatcher recovery status")
+	}
 	status, err := engine.Status()
 	if err != nil {
 		return err
@@ -110,6 +115,13 @@ func hardSync(c hw.Config, engine *hw.Engine) (err error) {
 	defer signal.Stop(interrupt)
 	fmt.Println("Подготавливаю ручную синхронизацию; текущая проверка может задержать начало…")
 	return hw.WithLockWait(c, 3*time.Minute, func() (syncErr error) {
+		previous, progressErr := engine.HardSyncProgress()
+		if progressErr != nil {
+			return progressErr
+		}
+		if previous != nil {
+			return errors.New("предыдущий hard-sync не завершён; проверьте hotwatcher recovery status")
+		}
 		lockedStatus, statusErr := engine.Status()
 		if statusErr != nil {
 			return statusErr
@@ -117,14 +129,41 @@ func hardSync(c hw.Config, engine *hw.Engine) (err error) {
 		if lockedStatus["pending_transaction"] == true || lockedStatus["static_fallback_mode"] == true || lockedStatus["hold"] == true || lockedStatus["disk_matches_state"] != true {
 			return errors.New("состояние изменилось перед hard-sync; проверьте hotwatcher status")
 		}
+		stage, mayBeStopped := "preparing", false
+		if err := engine.RecordHardSync(stage, mayBeStopped, ""); err != nil {
+			return err
+		}
+		setStage := func(next string, stopped bool) error {
+			if err := engine.RecordHardSync(next, stopped, ""); err != nil {
+				return err
+			}
+			stage, mayBeStopped = next, stopped
+			return nil
+		}
+		defer func() {
+			if syncErr == nil {
+				syncErr = engine.ClearHardSyncProgress()
+			} else if recordErr := engine.RecordHardSync("failed", mayBeStopped, "сбой на этапе "+stage); recordErr != nil {
+				syncErr = errors.Join(syncErr, recordErr)
+			}
+		}()
 		verified := map[string]time.Duration{}
 		var prepared hw.Parsed
 		_, fetchErr := fetchWithoutVPN(func() error {
+			if err := setStage("stopping_xkeen", true); err != nil {
+				return err
+			}
 			if stopErr := xkeen("-stop"); stopErr != nil {
 				return stopErr
 			}
-			return waitXrayStopped(engine, 30*time.Second)
+			if err := waitXrayStopped(engine, 30*time.Second); err != nil {
+				return err
+			}
+			return setStage("downloading", true)
 		}, func() error {
+			if err := setStage("starting_xkeen", true); err != nil {
+				return err
+			}
 			startErr := xkeen("-start")
 			fmt.Println("Ожидаю API списка узлов и балансировщика после запуска XKeen…")
 			readyErr := waitXrayReady(engine, 60*time.Second)
@@ -132,7 +171,7 @@ func hardSync(c hw.Config, engine *hw.Engine) (err error) {
 				if startErr != nil {
 					fmt.Println("XKeen сообщил об ошибке запуска, но оба API Xray доступны.")
 				}
-				return nil
+				return setStage("applying", false)
 			}
 			return errors.Join(startErr, readyErr)
 		}, func() ([]byte, error) {
@@ -144,6 +183,9 @@ func hardSync(c hw.Config, engine *hw.Engine) (err error) {
 			parsed, parseErr := hw.Parse(b, c)
 			if parseErr != nil {
 				return nil, parseErr
+			}
+			if err := setStage("checking_keys", true); err != nil {
+				return nil, err
 			}
 			fmt.Println("Проверяю ключи без VPN…")
 			for i, node := range parsed.Nodes {

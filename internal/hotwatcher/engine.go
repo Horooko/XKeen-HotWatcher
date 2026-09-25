@@ -201,7 +201,7 @@ func (e *Engine) sync(adopt bool, prepared *Parsed) error {
 			return er
 		}
 		if e.C.SelectionPolicy == "latency" || e.VerifiedLatencies != nil {
-			selected, probeErr := e.fastest(nodes, s.Active, tags, s.Selected)
+			selected, probeErr := e.fastest(nodes, s.Selected, s.SelectedAt)
 			if probeErr != nil {
 				return probeErr
 			}
@@ -237,7 +237,11 @@ func (e *Engine) sync(adopt bool, prepared *Parsed) error {
 	}
 	selected := choose(nodes, oldTarget, previousIdentity, e.C.PreferredName)
 	if e.C.SelectionPolicy == "latency" || e.VerifiedLatencies != nil {
-		selected, er = e.fastest(nodes, oldNodes, tags, selected)
+		selectedAt := time.Time{}
+		if s != nil && selected == s.Selected {
+			selectedAt = s.SelectedAt
+		}
+		selected, er = e.fastest(nodes, selected, selectedAt)
 		if er != nil {
 			return er
 		}
@@ -306,9 +310,11 @@ func (e *Engine) sync(adopt bool, prepared *Parsed) error {
 // fastest measures the complete HTTPS request through each isolated VLESS
 // outbound. Unreachable nodes remain in the pool but are never selected.
 // If no node passes, the old configuration is kept.
-func (e *Engine) fastest(nodes, oldNodes []Node, tags map[string]bool, fallback string) (string, error) {
+func (e *Engine) fastest(nodes []Node, fallback string, selectedAt time.Time) (string, error) {
 	best := ""
 	bestLatency := time.Duration(0)
+	currentLatency := time.Duration(0)
+	currentVerified := false
 	for _, n := range nodes {
 		latency, err := e.probeLatency(n)
 		if err != nil {
@@ -318,9 +324,26 @@ func (e *Engine) fastest(nodes, oldNodes []Node, tags map[string]bool, fallback 
 		if best == "" || latency < bestLatency || (latency == bestLatency && n.Tag == fallback) {
 			best, bestLatency = n.Tag, latency
 		}
+		if n.Tag == fallback {
+			currentLatency, currentVerified = latency, true
+		}
 	}
 	if best == "" {
 		return "", errors.New("all active nodes failed HTTPS latency probes; old selection kept")
+	}
+	if best != fallback && currentVerified {
+		if age, ok := elapsed(e.Now(), selectedAt); ok && age < time.Duration(e.C.KeySwitchCooldownSeconds)*time.Second {
+			return fallback, nil
+		}
+		gain := currentLatency - bestLatency
+		minimum := time.Duration(e.C.KeySwitchMinImprovementMS) * time.Millisecond
+		percentage := currentLatency * time.Duration(e.C.KeySwitchMinImprovementPercent) / 100
+		if percentage > minimum {
+			minimum = percentage
+		}
+		if gain < minimum {
+			return fallback, nil
+		}
 	}
 	return best, nil
 }
@@ -587,7 +610,7 @@ func (e *Engine) Status() (map[string]any, error) {
 	if er != nil {
 		return nil, er
 	}
-	m := map[string]any{"version": Version, "adopted": s != nil, "hold": e.held(), "pending_transaction": e.pending(), "automatic_gc": e.C.AutoGC, "selection_policy": e.C.SelectionPolicy, "update_interval_seconds": e.C.IntervalSeconds, "hotwatcher_restarts_xray": false, "hard_sync_restarts_xray": true, "static_fallback_mode": mode != nil}
+	m := map[string]any{"version": Version, "adopted": s != nil, "hold": e.held(), "pending_transaction": e.pending(), "automatic_gc": e.C.AutoGC, "selection_policy": e.C.SelectionPolicy, "key_switch_min_improvement_ms": e.C.KeySwitchMinImprovementMS, "key_switch_min_improvement_percent": e.C.KeySwitchMinImprovementPercent, "key_switch_cooldown_seconds": e.C.KeySwitchCooldownSeconds, "update_interval_seconds": e.C.IntervalSeconds, "hotwatcher_restarts_xray": false, "hard_sync_restarts_xray": true, "static_fallback_mode": mode != nil}
 	if mode != nil {
 		m["static_fallback_alias"] = staticAlias
 	}

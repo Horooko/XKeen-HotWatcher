@@ -1,10 +1,12 @@
 package updater
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -85,7 +87,7 @@ func TestOfflineRepairRecordsBinaryAndPreservesHighWater(t *testing.T) {
 	Binary = filepath.Join(Root, "hotwatcher")
 	ConfigPath = filepath.Join(Root, "updates.json")
 	defer func() { Root, Binary, ConfigPath = oldRoot, oldBinary, oldConfig }()
-	if err := os.WriteFile(Binary, []byte("candidate-v0.2.9"), 0700); err != nil {
+	if err := os.WriteFile(Binary, []byte("candidate-v0.2.10"), 0700); err != nil {
 		t.Fatal(err)
 	}
 	if err := save(ConfigPath, Defaults()); err != nil {
@@ -94,19 +96,60 @@ func TestOfflineRepairRecordsBinaryAndPreservesHighWater(t *testing.T) {
 	if err := save(statePath(), State{Installed: "0.2.4", InstalledHash: "old", HighWater: 2004, Verified: true}); err != nil {
 		t.Fatal(err)
 	}
-	if err := RepairOfflineBootstrap("0.2.9"); err != nil {
+	if err := RepairOfflineBootstrap("0.2.10"); err != nil {
 		t.Fatal(err)
 	}
 	s := readState()
 	hash, _ := hashFile(Binary)
-	if s.Invalid || s.Installed != "0.2.9" || s.Previous != "0.2.4" || s.InstalledHash != hash || s.HighWater != 2009 || s.Verified {
+	if s.Invalid || s.Installed != "0.2.10" || s.Previous != "0.2.4" || s.InstalledHash != hash || s.HighWater != 2010 || s.Verified {
 		t.Fatal("offline repair state incorrect", s)
 	}
-	if err := save(statePath(), State{Installed: "0.2.10", HighWater: 2010}); err != nil {
+	if err := save(statePath(), State{Installed: "0.2.11", HighWater: 2011}); err != nil {
 		t.Fatal(err)
 	}
-	if err := RepairOfflineBootstrap("0.2.9"); err == nil || readState().HighWater != 2010 {
+	if err := RepairOfflineBootstrap("0.2.10"); err == nil || readState().HighWater != 2011 {
 		t.Fatal("offline repair lowered high-water mark")
+	}
+}
+
+func TestUpdateResultDoesNotChangeStrictUpdaterState(t *testing.T) {
+	oldRoot := Root
+	Root = t.TempDir()
+	defer func() { Root = oldRoot }()
+	if err := os.Chmod(Root, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := save(statePath(), State{Installed: "0.2.9", HighWater: 2009}); err != nil {
+		t.Fatal(err)
+	}
+	recordResult("installed", "0.2.9", "0.2.10")
+	result := readResult()
+	if result == nil || result.Outcome != "installed" || result.Target != "0.2.10" || readState().Invalid {
+		t.Fatalf("update result broke state compatibility: %+v", result)
+	}
+}
+
+func TestUpdateOverviewShowsVersionAndRollbackWithoutRawState(t *testing.T) {
+	oldRoot := Root
+	Root = t.TempDir()
+	defer func() { Root = oldRoot }()
+	if err := os.Chmod(Root, 0700); err != nil {
+		t.Fatal(err)
+	}
+	recordResult("rolled_back", "0.2.10", "0.2.9")
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldStdout := os.Stdout
+	os.Stdout = writer
+	printUpdateOverview(Defaults(), State{Installed: "0.2.9", Available: "0.2.10", Verified: true})
+	writer.Close()
+	os.Stdout = oldStdout
+	output, err := io.ReadAll(reader)
+	reader.Close()
+	if err != nil || !bytes.Contains(output, []byte("0.2.10")) || !bytes.Contains(output, []byte("откат")) || bytes.Contains(output, []byte(`"configuration"`)) {
+		t.Fatalf("update overview is incomplete or raw: %s, %v", output, err)
 	}
 }
 func TestReleaseAssetExactURL(t *testing.T) {

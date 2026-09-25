@@ -161,3 +161,37 @@ func TestDNSAnswerMustContainMatchingSuccessfulReply(t *testing.T) {
 		t.Fatal("SERVFAIL accepted")
 	}
 }
+
+func TestDNSProbeConfigUsesBuiltinDNSOnLoopback(t *testing.T) {
+	dns := map[string]json.RawMessage{
+		"servers": json.RawMessage(`["https://1.1.1.1/dns-query"]`),
+		"tag":     json.RawMessage(`"dns-via-proxy"`),
+	}
+	outbound := map[string]any{"tag": "selected-vless", "protocol": "vless", "settings": map[string]any{}}
+	b, err := dnsProbeConfig(dns, outbound, 14053)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config struct {
+		Inbounds []struct {
+			Listen   string `json:"listen"`
+			Protocol string `json:"protocol"`
+		} `json:"inbounds"`
+		Outbounds []struct {
+			Tag      string `json:"tag"`
+			Protocol string `json:"protocol"`
+		} `json:"outbounds"`
+		Routing struct {
+			Rules []struct {
+				InboundTag  []string `json:"inboundTag"`
+				OutboundTag string   `json:"outboundTag"`
+			} `json:"rules"`
+		} `json:"routing"`
+	}
+	if err := json.Unmarshal(b, &config); err != nil {
+		t.Fatal(err)
+	}
+	if len(config.Inbounds) != 1 || config.Inbounds[0].Listen != "127.0.0.1" || config.Inbounds[0].Protocol != "dokodemo-door" || len(config.Outbounds) != 2 || config.Outbounds[1].Protocol != "dns" || len(config.Routing.Rules) != 2 || config.Routing.Rules[1].OutboundTag != "selected-vless" {
+		t.Fatalf("DNS probe could bypass built-in DNS or bind outside loopback: %s", b)
+	}
+}

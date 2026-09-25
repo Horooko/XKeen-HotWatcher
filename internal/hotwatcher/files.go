@@ -15,6 +15,23 @@ import (
 
 var ErrBusy = errors.New("another Hot Watcher operation is in progress")
 
+type LockInfo struct {
+	Busy      bool      `json:"busy"`
+	PID       int       `json:"pid,omitempty"`
+	Operation string    `json:"operation,omitempty"`
+	Since     time.Time `json:"since,omitempty"`
+}
+
+func lockOperation() string {
+	allowed := map[string]bool{"sync": true, "hard-sync": true, "adopt": true, "check-key": true, "select": true, "recover": true, "abort": true, "recovery": true, "dns": true, "daemon": true, "stop": true, "start": true}
+	for _, arg := range os.Args[1:] {
+		if allowed[arg] {
+			return arg
+		}
+	}
+	return "hotwatcher"
+}
+
 func digest(b []byte) string { h := sha256.Sum256(b); return hex.EncodeToString(h[:]) }
 func encode(v any) []byte    { b, _ := json.MarshalIndent(v, "", "  "); return append(b, '\n') }
 func regular(path string) error {
@@ -144,7 +161,57 @@ func lock(dir string) (func(), error) {
 		}
 		return nil, fmt.Errorf("Hot Watcher lock failed: %w", e)
 	}
-	return func() { syscall.Flock(int(f.Fd()), syscall.LOCK_UN); f.Close() }, nil
+	info := LockInfo{Busy: true, PID: os.Getpid(), Operation: lockOperation(), Since: time.Now().UTC()}
+	if e = f.Truncate(0); e == nil {
+		_, e = f.Seek(0, io.SeekStart)
+	}
+	if e == nil {
+		e = json.NewEncoder(f).Encode(info)
+	}
+	if e == nil {
+		e = f.Sync()
+	}
+	if e != nil {
+		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		_ = f.Close()
+		return nil, e
+	}
+	return func() {
+		_ = f.Truncate(0)
+		_, _ = f.Seek(0, io.SeekStart)
+		_ = f.Sync()
+		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		_ = f.Close()
+	}, nil
+}
+
+// CurrentLock reports whether a process really holds the kernel lock. A
+// leftover lock file after a crash is never treated as a busy operation.
+func CurrentLock(c Config) (LockInfo, error) {
+	p := filepath.Join(c.StateDir, "lock")
+	if err := regular(p); os.IsNotExist(err) {
+		return LockInfo{}, nil
+	} else if err != nil {
+		return LockInfo{}, err
+	}
+	f, err := os.OpenFile(p, os.O_RDWR, 0)
+	if err != nil {
+		return LockInfo{}, err
+	}
+	defer f.Close()
+	if err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err == nil {
+		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		return LockInfo{}, nil
+	}
+	if !errors.Is(err, syscall.EWOULDBLOCK) && !errors.Is(err, syscall.EAGAIN) {
+		return LockInfo{}, err
+	}
+	var info LockInfo
+	if decodeErr := json.NewDecoder(io.LimitReader(f, 4096)).Decode(&info); decodeErr != nil {
+		return LockInfo{Busy: true}, nil
+	}
+	info.Busy = true
+	return info, nil
 }
 func logEvent(dir, event string, fields map[string]any) error {
 	p := filepath.Join(dir, "events.jsonl")

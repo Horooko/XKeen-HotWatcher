@@ -24,6 +24,17 @@ func dnsCommand(c hw.Config, engine *hw.Engine, args []string) error {
 		}
 		return err
 	}
+	if len(args) == 1 && args[0] == "verify" {
+		fmt.Println("Проверяю DNS через временный Xray: напрямую и через выбранный ключ…")
+		result, err := engine.DNSVerify()
+		if result.ConfigFile != "" {
+			printJSON(result)
+		}
+		if err == nil && !result.Direct.Success && !result.SelectedVLESS.Success {
+			return errors.New("DNS не ответил ни через прямой, ни через выбранный VLESS-маршрут")
+		}
+		return err
+	}
 	if len(args) == 2 && args[0] == "auto" && (args[1] == "on" || args[1] == "off") {
 		return hw.WithLock(c, func() error {
 			if args[1] == "off" {
@@ -51,5 +62,5 @@ func dnsCommand(c hw.Config, engine *hw.Engine, args []string) error {
 			return nil
 		})
 	}
-	return errors.New("использование: hotwatcher dns status|test|auto on|auto off")
+	return errors.New("использование: hotwatcher dns status|test|verify|auto on|auto off")
 }

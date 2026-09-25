@@ -27,7 +27,10 @@
 | `max_nodes` | `64` | Лимит активных уникальных VLESS, 1..256 |
 | `max_retired` | `128` | Лимит ещё не удалённых старых узлов, 1..1024 |
 | `preferred_name_contains` | пусто | Предпочтение при первичном выборе/исчезновении выбранного endpoint |
-| `selection_policy` | `latency` | `latency`: выбирать минимальную задержку HTTPS через VLESS при каждом sync; `sticky`: сохранять текущий узел |
+| `selection_policy` | `latency` | `latency`: измерять HTTPS-задержку через VLESS и учитывать пороги смены; `sticky`: сохранять текущий узел |
+| `key_switch_min_improvement_ms` | `80` | Новый ключ должен быть быстрее минимум на столько миллисекунд, 0..5000 |
+| `key_switch_min_improvement_percent` | `20` | И минимум на столько процентов от задержки текущего ключа, 0..100; применяется больший из двух порогов |
+| `key_switch_cooldown_seconds` | `1800` | Минимальный интервал между плановыми сменами рабочего ключа, 0..86400; отказ активного ключа обходит этот интервал |
 | `static_fallback_tag` | `vless-reality` | Тег статического VLESS outbound в `04_outbounds.json` для `hotwatcher stop` |
 | `ca_file` | пусто | Дополнительный PEM bundle для HTTPS; проверка TLS не отключается |
 | `allow_tls_nodes` | `false` | Разрешить VLESS+TLS наряду с Reality |

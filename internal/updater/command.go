@@ -40,6 +40,13 @@ func Command(args []string) error {
 		}
 		return RepairOfflineBootstrap(args[1])
 	case "status":
+		if len(args) != 1 && (len(args) != 2 || args[1] != "--json") {
+			return errors.New("использование: hotwatcher update status [--json]")
+		}
+		if len(args) == 1 {
+			printUpdateOverview(c, s)
+			return nil
+		}
 		hash, _ := hashFile(Binary)
 		j, _ := readJournal()
 		xray, xerr := xrayIdentity()
@@ -56,6 +63,7 @@ func Command(args []string) error {
 		return nil
 	case "check", "download", "apply":
 		if args[0] == "apply" {
+			fmt.Println("Обновление Hot Watcher — установлена:", installedVersion(s))
 			fmt.Println("Проверяю подписанный релиз и доступность обновления…")
 		}
 		unlock, lockErr := lock()
@@ -105,9 +113,16 @@ func Command(args []string) error {
 		}
 		unlock()
 		if args[0] == "check" {
+			fmt.Println("Установлена:", installedVersion(s))
 			fmt.Println("Доступна подписанная версия:", m.Version)
 			fmt.Println("Установить: hotwatcher update")
 			return nil
+		}
+		if args[0] == "apply" {
+			fmt.Println("Доступна подписанная версия:", m.Version)
+			fmt.Println("Будет остановлена только служба Hot Watcher; Xray и XKeen останутся работать.")
+			fmt.Println("При ошибке установки предыдущий бинарник восстанавливается автоматически.")
+			fmt.Println("Скачиваю пакет и проверяю хеш…")
 		}
 		p, e := download(ctx, r, a, c)
 		if e != nil {
@@ -117,10 +132,13 @@ func Command(args []string) error {
 		if args[0] == "download" {
 			return nil
 		}
+		fmt.Println("Проверяю новую сборку, заменяю Hot Watcher и жду готовности службы…")
 		if err := apply(ctx, c, m, a, p, &s); err != nil {
+			fmt.Println("Установка не завершена. Состояние отката: hotwatcher update status")
 			return err
 		}
 		fmt.Println("Обновление установлено:", m.Version)
+		fmt.Println("Состояние: hotwatcher update status")
 		return nil
 	case "rollback":
 		return errors.New("manual rollback requires a separate verified local-release selection; automatic recovery uses pending journal")
@@ -251,6 +269,58 @@ func Command(args []string) error {
 	default:
 		return errors.New("unknown update command")
 	}
+}
+
+func installedVersion(s State) string {
+	if s.Installed != "" {
+		return s.Installed
+	}
+	return BuildInfo()["version"].(string)
+}
+
+func printUpdateOverview(c Config, s State) {
+	fmt.Println("Hot Watcher — обновление программы")
+	fmt.Println("Установлена:", installedVersion(s))
+	if s.Available != "" && s.Verified {
+		fmt.Println("Доступна по последней проверке:", s.Available)
+	} else {
+		fmt.Println("Доступная версия: нет подтверждённого кандидата; hotwatcher update check")
+	}
+	if !s.LastCheck.IsZero() {
+		fmt.Println("Последняя проверка:", s.LastCheck.Local().Format("2006-01-02 15:04:05"))
+	}
+	if s.Invalid {
+		fmt.Println("Состояние updater: повреждено; установка заблокирована")
+	} else if !c.Enabled {
+		fmt.Println("Режим: обновления выключены")
+	} else if c.Mode == "auto" {
+		fmt.Println("Режим: автоматическая установка подходящих версий")
+	} else {
+		fmt.Println("Режим: уведомления и ручная установка")
+	}
+	if j, err := readJournal(); err == nil {
+		fmt.Println("Текущий этап установки:", j.Phase)
+	} else if !os.IsNotExist(err) {
+		fmt.Println("Журнал установки не читается; требуется проверка")
+	}
+	fmt.Println("При установке останавливается только Hot Watcher; Xray не перезапускается.")
+	fmt.Println("При сбое предыдущий бинарник восстанавливается автоматически.")
+	if result := readResult(); result != nil {
+		switch result.Outcome {
+		case "installed":
+			fmt.Printf("Последний результат: установлена %s (%s)\n", result.Target, result.Time.Local().Format("2006-01-02 15:04"))
+		case "rolled_back":
+			fmt.Printf("Последний результат: возвращён прежний бинарник %s после сбоя %s (%s); проверьте службу\n", result.Target, result.Previous, result.Time.Local().Format("2006-01-02 15:04"))
+		}
+	} else if s.Deferred != "" {
+		fmt.Println("Последний результат: проверка или установка отложена из-за ошибки")
+	} else {
+		fmt.Println("Последний результат: данных пока нет")
+	}
+	if s.Previous != "" {
+		fmt.Println("Предыдущая установленная версия:", s.Previous)
+	}
+	fmt.Println("Ручной откат версии не поддерживается; после сбоя установки откат выполняется автоматически.")
 }
 func saveConfig(c Config) error {
 	if err := c.Validate(); err != nil {

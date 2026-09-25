@@ -5,6 +5,8 @@
 ```sh
 hotwatcher status
 hotwatcher doctor
+hotwatcher doctor network
+hotwatcher recovery status
 hotwatcher keys
 tail -n 40 /opt/var/lib/hotwatcher/events.jsonl
 cat /opt/var/lib/hotwatcher/last-check.json
@@ -29,10 +31,11 @@ cat /opt/var/lib/hotwatcher/last-check.json
 | `staged full ... failed validation` | Проверить `xray_asset_dir`, наличие ext:*.dat, поддержку новых узлов установленным Xray |
 | `all active nodes failed HTTPS latency probes` | Ни один узел подписки не дал HTTP 204 через изолированный клиент; старый выбор сохранён. Посмотри `keys`, затем `keys --check` для повторной проверки применённых ключей |
 | `XKeen запущен, но API ... недоступен` | XKeen вернулся, но применение отложено из-за API. `keys` покажет загруженные и сохранённые ключи; проверь `xkeen -status`, `hotwatcher doctor` и журналы XKeen/Xray |
-| `another Hot Watcher operation is in progress` | Другая пишущая операция или демон держит `flock`; дождись завершения. Не удаляй файл `lock`: наличие файла не означает зависшую блокировку. В новой версии `keys` не требует этой блокировки |
+| `another Hot Watcher operation is in progress` | Выполни `recovery status`: он проверяет реальную блокировку ядра и показывает PID и операцию. Не удаляй файл `lock`: оставшийся после падения файл сам по себе ничего не блокирует |
 | `cannot pin an existing outbound` | Балансировщик пока не имеет действующего target; проверить исходный пул/Observatory |
 | `outbound file was changed outside` | Остался cron/другой updater/ручная правка; остановить конфликт, восстановить согласованное состояние |
 | `pending_transaction: true` | Не restart; выбрать `recover` или `abort`, см. ROLLBACK.md |
+| Прерванный `hard-sync` | `recovery status`, затем `recovery resume` для запуска XKeen и завершения применения либо `recovery abort` для возврата прежнего выбора. Команды не удаляют журнал при ошибке |
 | `retired pool limit reached` | Выполнить `gc` вне игры после grace; не удалять state вручную |
 | `api_reachable: true`, игра не работает | Доступность API не доказывает UDP или доступность выбранного сервера |
 

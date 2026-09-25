@@ -14,40 +14,43 @@ import (
 	"strings"
 )
 
-var Version = "0.2.9"
+var Version = "0.2.10"
 
 const TagPrefix = "main--VL--hw-"
 
 type Config struct {
-	AssetDir            string   `json:"xray_asset_dir"`
-	SubscriptionURLFile string   `json:"subscription_url_file"`
-	XrayBinary          string   `json:"xray_binary"`
-	APIAddress          string   `json:"api_address"`
-	BalancerTag         string   `json:"balancer_tag"`
-	ConfigDir           string   `json:"xray_config_dir"`
-	GeneratedFile       string   `json:"generated_file"`
-	StateDir            string   `json:"state_dir"`
-	ProbeURLs           []string `json:"probe_urls"`
-	ProbeTimeoutSeconds int      `json:"probe_timeout_seconds"`
-	HTTPTimeoutSeconds  int      `json:"http_timeout_seconds"`
-	APITimeoutSeconds   int      `json:"api_timeout_seconds"`
-	IntervalSeconds     int      `json:"interval_seconds"`
-	ReconcileSeconds    int      `json:"reconcile_seconds"`
-	KeyCheckSeconds     int      `json:"key_check_interval_seconds"`
-	GraceSeconds        int      `json:"grace_seconds"`
-	AutoGC              bool     `json:"automatic_gc"`
-	MaxNodes            int      `json:"max_nodes"`
-	MaxRetired          int      `json:"max_retired"`
-	PreferredName       string   `json:"preferred_name_contains"`
-	SelectionPolicy     string   `json:"selection_policy"`
-	StaticFallbackTag   string   `json:"static_fallback_tag"`
-	CAFile              string   `json:"ca_file"`
-	AllowTLS            bool     `json:"allow_tls_nodes"`
-	AllowLoopbackHTTP   bool     `json:"allow_loopback_http_for_tests"`
+	AssetDir                       string   `json:"xray_asset_dir"`
+	SubscriptionURLFile            string   `json:"subscription_url_file"`
+	XrayBinary                     string   `json:"xray_binary"`
+	APIAddress                     string   `json:"api_address"`
+	BalancerTag                    string   `json:"balancer_tag"`
+	ConfigDir                      string   `json:"xray_config_dir"`
+	GeneratedFile                  string   `json:"generated_file"`
+	StateDir                       string   `json:"state_dir"`
+	ProbeURLs                      []string `json:"probe_urls"`
+	ProbeTimeoutSeconds            int      `json:"probe_timeout_seconds"`
+	HTTPTimeoutSeconds             int      `json:"http_timeout_seconds"`
+	APITimeoutSeconds              int      `json:"api_timeout_seconds"`
+	IntervalSeconds                int      `json:"interval_seconds"`
+	ReconcileSeconds               int      `json:"reconcile_seconds"`
+	KeyCheckSeconds                int      `json:"key_check_interval_seconds"`
+	GraceSeconds                   int      `json:"grace_seconds"`
+	AutoGC                         bool     `json:"automatic_gc"`
+	MaxNodes                       int      `json:"max_nodes"`
+	MaxRetired                     int      `json:"max_retired"`
+	PreferredName                  string   `json:"preferred_name_contains"`
+	SelectionPolicy                string   `json:"selection_policy"`
+	KeySwitchMinImprovementMS      int      `json:"key_switch_min_improvement_ms"`
+	KeySwitchMinImprovementPercent int      `json:"key_switch_min_improvement_percent"`
+	KeySwitchCooldownSeconds       int      `json:"key_switch_cooldown_seconds"`
+	StaticFallbackTag              string   `json:"static_fallback_tag"`
+	CAFile                         string   `json:"ca_file"`
+	AllowTLS                       bool     `json:"allow_tls_nodes"`
+	AllowLoopbackHTTP              bool     `json:"allow_loopback_http_for_tests"`
 }
 
 func Defaults() Config {
-	return Config{AssetDir: "/opt/etc/xray/dat", SubscriptionURLFile: "/opt/etc/hotwatcher/subscription.url", XrayBinary: "/opt/sbin/xray", APIAddress: "127.0.0.1:10085", BalancerTag: "proxy", ConfigDir: "/opt/etc/xray/configs", GeneratedFile: "04_outbounds.main.json", StateDir: "/opt/var/lib/hotwatcher", ProbeURLs: []string{"https://www.gstatic.com/generate_204"}, ProbeTimeoutSeconds: 12, HTTPTimeoutSeconds: 30, APITimeoutSeconds: 10, IntervalSeconds: 1800, ReconcileSeconds: 60, KeyCheckSeconds: 300, GraceSeconds: 1800, MaxNodes: 64, MaxRetired: 128, SelectionPolicy: "latency", StaticFallbackTag: "vless-reality"}
+	return Config{AssetDir: "/opt/etc/xray/dat", SubscriptionURLFile: "/opt/etc/hotwatcher/subscription.url", XrayBinary: "/opt/sbin/xray", APIAddress: "127.0.0.1:10085", BalancerTag: "proxy", ConfigDir: "/opt/etc/xray/configs", GeneratedFile: "04_outbounds.main.json", StateDir: "/opt/var/lib/hotwatcher", ProbeURLs: []string{"https://www.gstatic.com/generate_204"}, ProbeTimeoutSeconds: 12, HTTPTimeoutSeconds: 30, APITimeoutSeconds: 10, IntervalSeconds: 1800, ReconcileSeconds: 60, KeyCheckSeconds: 300, GraceSeconds: 1800, MaxNodes: 64, MaxRetired: 128, SelectionPolicy: "latency", KeySwitchMinImprovementMS: 80, KeySwitchMinImprovementPercent: 20, KeySwitchCooldownSeconds: 1800, StaticFallbackTag: "vless-reality"}
 }
 func LoadConfig(path string) (Config, error) {
 	c := Defaults()
@@ -87,6 +90,9 @@ func (c Config) Validate() error {
 	}
 	if c.SelectionPolicy != "latency" && c.SelectionPolicy != "sticky" {
 		return errors.New("selection_policy must be latency or sticky")
+	}
+	if c.KeySwitchMinImprovementMS < 0 || c.KeySwitchMinImprovementMS > 5000 || c.KeySwitchMinImprovementPercent < 0 || c.KeySwitchMinImprovementPercent > 100 || c.KeySwitchCooldownSeconds < 0 || c.KeySwitchCooldownSeconds > 86400 {
+		return errors.New("key switch thresholds out of range")
 	}
 	if c.StaticFallbackTag == "" || len(c.StaticFallbackTag) > 128 || strings.HasPrefix(c.StaticFallbackTag, "main--VL") || c.StaticFallbackTag == "direct" || c.StaticFallbackTag == "block" {
 		return errors.New("static_fallback_tag must name a non-owned proxy outbound")
