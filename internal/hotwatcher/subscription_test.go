@@ -2,6 +2,7 @@ package hotwatcher
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -152,6 +153,30 @@ func TestConfigStrictPermissionsAndUnknownFields(t *testing.T) {
 	os.WriteFile(p, []byte(`{"mystery":true}`), 0600)
 	if _, e := LoadConfig(p); e == nil {
 		t.Fatal("unknown field accepted")
+	}
+}
+
+func TestOldConfigGetsPrivateLANWebUIWithoutExposingPublicAddress(t *testing.T) {
+	var old map[string]any
+	if err := json.Unmarshal(encode(Defaults()), &old); err != nil {
+		t.Fatal(err)
+	}
+	delete(old, "webui_lan_listen")
+	p := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(p, encode(old), 0600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := LoadConfig(p)
+	if err != nil || c.WebUILANListen != "192.168.1.1:8787" {
+		t.Fatalf("old config did not gain LAN listener: %q %v", c.WebUILANListen, err)
+	}
+	c.WebUILANListen = "8.8.8.8:8787"
+	if err := c.Validate(); err == nil {
+		t.Fatal("public Web UI address accepted")
+	}
+	c.WebUILANListen = ""
+	if err := c.Validate(); err != nil {
+		t.Fatalf("explicit LAN opt-out rejected: %v", err)
 	}
 }
 func TestMetadataNameURLNotPrinted(t *testing.T) {

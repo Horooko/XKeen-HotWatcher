@@ -21,6 +21,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 //go:embed ui/*
@@ -29,6 +31,7 @@ var webAssets embed.FS
 type webSession struct {
 	CSRF    string
 	Expires time.Time
+	Token   string
 }
 
 type webJob struct {
@@ -48,6 +51,7 @@ type webUI struct {
 	config   hw.Config
 	engine   *hw.Engine
 	token    string
+	hosts    map[string]bool
 	mu       sync.Mutex
 	sessions map[string]webSession
 	job      webJob
@@ -59,6 +63,18 @@ func randomHex(bytes int) (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(b), nil
+}
+
+func validWebToken(value string) bool {
+	if len(value) < 16 || len(value) > 128 || utf8.RuneCountInString(value) < 16 || !utf8.ValidString(value) || strings.TrimSpace(value) != value {
+		return false
+	}
+	for _, r := range value {
+		if unicode.IsControl(r) {
+			return false
+		}
+	}
+	return true
 }
 
 func webToken(c hw.Config) (string, error) {
@@ -83,10 +99,7 @@ func webToken(c hw.Config) (string, error) {
 			return "", err
 		}
 		value := strings.TrimSpace(string(b))
-		if len(value) != 64 {
-			return "", errors.New("повреждён токен Web UI")
-		}
-		if _, err := hex.DecodeString(value); err != nil {
+		if !validWebToken(value) {
 			return "", errors.New("повреждён токен Web UI")
 		}
 		return value, nil
@@ -120,15 +133,63 @@ func webToken(c hw.Config) (string, error) {
 	return value, nil
 }
 
+func setWebToken(c hw.Config, value string) error {
+	if !validWebToken(value) {
+		return errors.New("токен должен содержать 16–128 печатных символов без пробелов по краям")
+	}
+	if _, err := webToken(c); err != nil {
+		return err
+	}
+	f, err := os.CreateTemp(c.StateDir, ".webui-token-")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
+	if err = f.Chmod(0600); err == nil {
+		_, err = io.WriteString(f, value+"\n")
+	}
+	if err == nil {
+		err = f.Sync()
+	}
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return err
+	}
+	return os.Rename(f.Name(), filepath.Join(c.StateDir, "webui-token"))
+}
+
 func newWebUI(c hw.Config, e *hw.Engine) (*webUI, error) {
 	token, err := webToken(c)
 	if err != nil {
 		return nil, err
 	}
-	return &webUI{config: c, engine: e, token: token, sessions: map[string]webSession{}}, nil
+	hosts := map[string]bool{c.WebUIListen: true}
+	if c.WebUILANListen != "" {
+		hosts[c.WebUILANListen] = true
+	}
+	return &webUI{config: c, engine: e, token: token, hosts: hosts, sessions: map[string]webSession{}}, nil
+}
+
+func (w *webUI) syncToken() bool {
+	token, err := webToken(w.config)
+	if err != nil {
+		return false
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.token != token {
+		w.token = token
+		w.sessions = map[string]webSession{}
+	}
+	return true
 }
 
 func (w *webUI) session(r *http.Request) (webSession, bool) {
+	if !w.syncToken() {
+		return webSession{}, false
+	}
 	cookie, err := r.Cookie("hw_session")
 	if err != nil || len(cookie.Value) != 64 {
 		return webSession{}, false
@@ -136,7 +197,7 @@ func (w *webUI) session(r *http.Request) (webSession, bool) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	s, ok := w.sessions[cookie.Value]
-	if !ok || time.Now().After(s.Expires) {
+	if !ok || s.Token != w.token || time.Now().After(s.Expires) {
 		delete(w.sessions, cookie.Value)
 		return webSession{}, false
 	}
@@ -144,7 +205,7 @@ func (w *webUI) session(r *http.Request) (webSession, bool) {
 }
 
 func (w *webUI) csrfOK(r *http.Request, session webSession) bool {
-	if r.Header.Get("Origin") != "" && r.Header.Get("Origin") != "http://"+w.config.WebUIListen {
+	if origin := r.Header.Get("Origin"); origin != "" && origin != "http://"+r.Host {
 		return false
 	}
 	value := r.Header.Get("X-HW-CSRF")
@@ -199,10 +260,14 @@ func (w *webUI) handler() http.Handler {
 		})
 	}
 	mux.HandleFunc("POST /api/login", func(out http.ResponseWriter, r *http.Request) {
+		if !w.syncToken() {
+			apiError(out, 500, "токен Web UI недоступен")
+			return
+		}
 		var input struct {
 			Token string `json:"token"`
 		}
-		if err := decodeRequest(r, &input); err != nil || len(input.Token) != len(w.token) || subtle.ConstantTimeCompare([]byte(input.Token), []byte(w.token)) != 1 {
+		if err := decodeRequest(r, &input); err != nil {
 			apiError(out, http.StatusUnauthorized, "неверный токен")
 			return
 		}
@@ -217,7 +282,12 @@ func (w *webUI) handler() http.Handler {
 			return
 		}
 		w.mu.Lock()
-		w.sessions[id] = webSession{CSRF: csrf, Expires: time.Now().Add(12 * time.Hour)}
+		if len(input.Token) != len(w.token) || subtle.ConstantTimeCompare([]byte(input.Token), []byte(w.token)) != 1 {
+			w.mu.Unlock()
+			apiError(out, http.StatusUnauthorized, "неверный токен")
+			return
+		}
+		w.sessions[id] = webSession{CSRF: csrf, Expires: time.Now().Add(12 * time.Hour), Token: w.token}
 		w.mu.Unlock()
 		http.SetCookie(out, &http.Cookie{Name: "hw_session", Value: id, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: r.TLS != nil, MaxAge: 12 * 3600})
 		jsonResponse(out, 200, map[string]any{"authenticated": true, "csrf": csrf})
@@ -398,7 +468,7 @@ func (w *webUI) handler() http.Handler {
 		out.Header().Set("X-Frame-Options", "DENY")
 		out.Header().Set("Referrer-Policy", "no-referrer")
 		out.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
-		if r.Host != w.config.WebUIListen {
+		if !w.hosts[r.Host] {
 			http.Error(out, "invalid host", 421)
 			return
 		}
@@ -515,21 +585,52 @@ func serveWebUI(ctx context.Context, c hw.Config, e *hw.Engine) error {
 	if err != nil {
 		return err
 	}
-	listener, err := net.Listen("tcp", c.WebUIListen)
-	if err != nil {
-		return err
+	addresses := []string{c.WebUIListen}
+	if c.WebUILANListen != "" && c.WebUILANListen != c.WebUIListen {
+		addresses = append(addresses, c.WebUILANListen)
 	}
-	server := &http.Server{Handler: w.handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 40 * time.Second, IdleTimeout: 45 * time.Second, MaxHeaderBytes: 8192}
+	listeners := make([]net.Listener, 0, len(addresses))
+	var bindError error
+	for _, address := range addresses {
+		listener, listenErr := net.Listen("tcp", address)
+		if listenErr != nil {
+			bindError = listenErr
+			hw.SafeLog(c, "webui_bind_failed", map[string]any{"address": address})
+			continue
+		}
+		listeners = append(listeners, listener)
+		fmt.Println("Web UI:", "http://"+address)
+	}
+	if len(listeners) == 0 {
+		return bindError
+	}
+	servers := make([]*http.Server, 0, len(listeners))
+	finished := make(chan error, len(listeners))
+	for _, listener := range listeners {
+		server := &http.Server{Handler: w.handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 40 * time.Second, IdleTimeout: 45 * time.Second, MaxHeaderBytes: 8192}
+		servers = append(servers, server)
+		go func() {
+			serveErr := server.Serve(listener)
+			if errors.Is(serveErr, http.ErrServerClosed) {
+				serveErr = nil
+			}
+			finished <- serveErr
+		}()
+	}
 	go func() {
 		<-ctx.Done()
 		shutdown, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
-		_ = server.Shutdown(shutdown)
+		for _, server := range servers {
+			_ = server.Shutdown(shutdown)
+		}
 	}()
-	fmt.Println("Web UI:", "http://"+c.WebUIListen)
-	err = server.Serve(listener)
-	if errors.Is(err, http.ErrServerClosed) {
-		return nil
+	var serveError error
+	for range servers {
+		serveErr := <-finished
+		if serveErr != nil {
+			serveError = serveErr
+		}
 	}
-	return err
+	return serveError
 }

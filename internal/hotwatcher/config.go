@@ -14,7 +14,7 @@ import (
 	"strings"
 )
 
-var Version = "0.3.0"
+var Version = "0.3.1"
 
 const TagPrefix = "main--VL--hw-"
 
@@ -31,6 +31,7 @@ type Config struct {
 	URLTestSites                   []string `json:"url_test_sites"`
 	WebUIEnabled                   bool     `json:"webui_enabled"`
 	WebUIListen                    string   `json:"webui_listen"`
+	WebUILANListen                 string   `json:"webui_lan_listen"`
 	ProbeTimeoutSeconds            int      `json:"probe_timeout_seconds"`
 	HTTPTimeoutSeconds             int      `json:"http_timeout_seconds"`
 	APITimeoutSeconds              int      `json:"api_timeout_seconds"`
@@ -53,7 +54,7 @@ type Config struct {
 }
 
 func Defaults() Config {
-	return Config{AssetDir: "/opt/etc/xray/dat", SubscriptionURLFile: "/opt/etc/hotwatcher/subscription.url", XrayBinary: "/opt/sbin/xray", APIAddress: "127.0.0.1:10085", BalancerTag: "proxy", ConfigDir: "/opt/etc/xray/configs", GeneratedFile: "04_outbounds.main.json", StateDir: "/opt/var/lib/hotwatcher", ProbeURLs: []string{"https://www.gstatic.com/generate_204"}, URLTestSites: []string{"https://google.com/", "https://chatgpt.com/", "https://youtube.com/", "https://discord.com/", "https://telegram.org/", "https://github.com/"}, WebUIEnabled: true, WebUIListen: "127.0.0.1:8787", ProbeTimeoutSeconds: 12, HTTPTimeoutSeconds: 30, APITimeoutSeconds: 10, IntervalSeconds: 1800, ReconcileSeconds: 60, KeyCheckSeconds: 300, GraceSeconds: 1800, MaxNodes: 64, MaxRetired: 128, SelectionPolicy: "latency", KeySwitchMinImprovementMS: 80, KeySwitchMinImprovementPercent: 20, KeySwitchCooldownSeconds: 1800, StaticFallbackTag: "vless-reality"}
+	return Config{AssetDir: "/opt/etc/xray/dat", SubscriptionURLFile: "/opt/etc/hotwatcher/subscription.url", XrayBinary: "/opt/sbin/xray", APIAddress: "127.0.0.1:10085", BalancerTag: "proxy", ConfigDir: "/opt/etc/xray/configs", GeneratedFile: "04_outbounds.main.json", StateDir: "/opt/var/lib/hotwatcher", ProbeURLs: []string{"https://www.gstatic.com/generate_204"}, URLTestSites: []string{"https://google.com/", "https://chatgpt.com/", "https://youtube.com/", "https://discord.com/", "https://telegram.org/", "https://github.com/"}, WebUIEnabled: true, WebUIListen: "127.0.0.1:8787", WebUILANListen: "192.168.1.1:8787", ProbeTimeoutSeconds: 12, HTTPTimeoutSeconds: 30, APITimeoutSeconds: 10, IntervalSeconds: 1800, ReconcileSeconds: 60, KeyCheckSeconds: 300, GraceSeconds: 1800, MaxNodes: 64, MaxRetired: 128, SelectionPolicy: "latency", KeySwitchMinImprovementMS: 80, KeySwitchMinImprovementPercent: 20, KeySwitchCooldownSeconds: 1800, StaticFallbackTag: "vless-reality"}
 }
 func LoadConfig(path string) (Config, error) {
 	c := Defaults()
@@ -124,6 +125,14 @@ func (c Config) Validate() error {
 	port, portErr := strconv.Atoi(webPort)
 	if webErr != nil || webIP == nil || (!webIP.IsLoopback() && !webIP.IsPrivate()) || portErr != nil || port < 1 || port > 65535 {
 		return errors.New("webui_listen must be a loopback or private LAN IP and valid port")
+	}
+	if c.WebUILANListen != "" {
+		lanHost, lanPort, lanErr := net.SplitHostPort(c.WebUILANListen)
+		lanIP := net.ParseIP(lanHost)
+		lanPortNumber, lanPortErr := strconv.Atoi(lanPort)
+		if lanErr != nil || lanIP == nil || !lanIP.IsPrivate() || lanIP.IsLoopback() || lanPortErr != nil || lanPortNumber < 1 || lanPortNumber > 65535 {
+			return errors.New("webui_lan_listen must be a private LAN IP and valid port, or empty to disable")
+		}
 	}
 	out := filepath.Join(c.ConfigDir, c.GeneratedFile)
 	if strings.HasPrefix(filepath.Clean(c.SubscriptionURLFile), filepath.Clean(c.ConfigDir)+string(os.PathSeparator)) || c.StateDir == c.ConfigDir || strings.HasPrefix(c.StateDir, filepath.Clean(c.ConfigDir)+string(os.PathSeparator)) || out == c.SubscriptionURLFile {
