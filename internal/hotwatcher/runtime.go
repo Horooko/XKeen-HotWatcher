@@ -59,7 +59,7 @@ func (x Xray) run(input []byte, args ...string) ([]byte, error) {
 	// API ListOutbounds can contain credential material; never print or persist it.
 	var out cappedBuffer
 	cmd.Stdout = &out
-	cmd.Stderr = &out
+	cmd.Stderr = io.Discard
 	if e := cmd.Run(); e != nil {
 		if ctx.Err() != nil {
 			return nil, errors.New("Xray command timeout")

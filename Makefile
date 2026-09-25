@@ -1,6 +1,7 @@
 .PHONY: test build vet clean
 
 test:
+	node --test tests/webui.test.cjs
 	go test -race -cover ./...
 vet:
 	go vet ./...

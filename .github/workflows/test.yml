@@ -18,6 +18,15 @@ jobs:
         with:
           go-version: stable
           cache: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node --test tests/webui.test.cjs
       - run: go test -race -cover ./...
       - run: go vet ./...
       - run: make build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hotwatcher-linux-builds
+          path: dist/
+          retention-days: 7

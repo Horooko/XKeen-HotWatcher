@@ -19,6 +19,7 @@ type xkeenStatus struct {
 	DetachedLog  []string  `json:"detached_log"`
 	XrayErrorLog []string  `json:"xray_error_log"`
 	CheckedAt    time.Time `json:"checked_at"`
+	XrayRunning  *bool     `json:"xray_running"`
 }
 
 var (
@@ -109,18 +110,29 @@ func (w *cappedOutput) Write(p []byte) (int, error) {
 }
 
 func readXKeenStatus() xkeenStatus {
+	return readXKeenStatusContext(context.Background())
+}
+
+func readXKeenStatusContext(parent context.Context) xkeenStatus {
+	return readXKeenStatusCommand(parent, xkeenCommand)
+}
+
+func readXKeenStatusCommand(parent context.Context, command string) xkeenStatus {
 	result := xkeenStatus{CheckedAt: time.Now().UTC()}
 	result.DetachedLog = tailLog("/opt/var/log/xkeen-detached.log")
 	result.XrayErrorLog = tailLog("/opt/var/log/xray/error.log")
-	info, err := os.Lstat(xkeenCommand)
+	// XKeen may be installed as an executable symlink.
+	info, err := os.Stat(command)
 	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0111 == 0 {
 		result.Status = []string{"Исполняемый файл XKeen не найден"}
 		return result
 	}
 	result.Installed = true
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, xkeenCommand, "-status")
+	cmd := exec.CommandContext(ctx, command, "-status")
+	cmd.Env = entwareStatusEnv()
+	cmd.WaitDelay = 250 * time.Millisecond
 	output := &cappedOutput{max: 8192}
 	cmd.Stdout, cmd.Stderr = output, output
 	cmd.Stdin = nil

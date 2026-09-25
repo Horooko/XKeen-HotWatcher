@@ -702,6 +702,9 @@ func (e *Engine) Status() (map[string]any, error) {
 	}
 	tags, re := e.R.List()
 	m["api_reachable"] = re == nil
+	if re != nil {
+		m["api_error"] = re.Error()
+	}
 	if re == nil {
 		m["runtime_outbounds"] = len(tags)
 		if s != nil {
@@ -710,6 +713,10 @@ func (e *Engine) Status() (map[string]any, error) {
 	}
 	b, be := e.R.Balance()
 	m["balancer_api_reachable"] = be == nil
+	if be != nil {
+		m["balancer_api_error"] = be.Error()
+	}
+	m["api_checked_at"] = e.Now().UTC()
 	if be == nil {
 		m["runtime_override"] = b.Override
 		m["balancer_pin_matches"] = s != nil && s.Selected == b.Override
