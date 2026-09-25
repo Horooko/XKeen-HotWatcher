@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -34,7 +35,7 @@ func usage() {
   auto          Снять закрепление и выбрать лучший доступный ключ
   emergency     Прочитать один VLESS URI из ввода и аварийно применить его
   status         Показать состояние службы и выбранный ключ
-  webui token    Показать токен входа в Web UI
+  webui token    Показать постоянный токен входа в Web UI
   update         Проверить и установить доступное обновление программы
 
 Подробности: hotwatcher help advanced
@@ -65,6 +66,7 @@ func advancedUsage() {
   config-example     Показать пример конфигурации без секретов
   version [--json]   Показать версию
   daemon             Запустить службу на переднем плане
+  webui token set    Задать новый токен из стандартного ввода
   webui serve        Запустить Web UI отдельно от службы
 
 hard-sync временно прерывает VPN-соединения и перезапускает XKeen.
@@ -148,23 +150,31 @@ func run() error {
 	}
 	engine := hw.New(c)
 	if command == "webui" {
-		if len(args) != 2 {
-			return errors.New("использование: hotwatcher webui token|serve")
-		}
-		switch args[1] {
-		case "token":
+		if len(args) == 2 && args[1] == "token" {
 			token, tokenErr := webToken(c)
 			if tokenErr == nil {
 				fmt.Println(token)
 			}
 			return tokenErr
-		case "serve":
+		}
+		if len(args) == 3 && args[1] == "token" && args[2] == "set" {
+			fmt.Fprint(os.Stderr, "Новый токен Web UI (16–128 символов): ")
+			value, readErr := bufio.NewReader(io.LimitReader(os.Stdin, 257)).ReadString('\n')
+			if (readErr != nil && readErr != io.EOF) || len(value) > 256 {
+				return errors.New("не удалось прочитать новый токен")
+			}
+			if err := setWebToken(c, strings.TrimRight(value, "\r\n")); err != nil {
+				return err
+			}
+			fmt.Println("Токен Web UI изменён; прежние сеансы завершены")
+			return nil
+		}
+		if len(args) == 2 && args[1] == "serve" {
 			ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer cancel()
 			return serveWebUI(ctx, c, engine)
-		default:
-			return errors.New("использование: hotwatcher webui token|serve")
 		}
+		return errors.New("использование: hotwatcher webui token [set]|serve")
 	}
 	if command == "url-test" {
 		if len(args) > 2 {

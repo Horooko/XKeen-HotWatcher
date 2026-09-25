@@ -18,7 +18,8 @@
 | `probe_urls` | `https://www.gstatic.com/generate_204` | От 1 до 4 URL; достаточно HTTP 204 хотя бы от одного |
 | `url_test_sites` | Google, ChatGPT, YouTube, Discord, Telegram, GitHub | От 1 до 12 публичных HTTPS-доменов; все должны открыться перед выбором ключа. Web UI сохраняет изменения отдельно в `state_dir/url-test-sites.json` и применяет их сразу |
 | `webui_enabled` | `true` | Запускать Web UI вместе со службой Hot Watcher |
-| `webui_listen` | `127.0.0.1:8787` | Адрес Web UI; только IP loopback или частной локальной сети |
+| `webui_listen` | `127.0.0.1:8787` | Локальный адрес Web UI; только IP loopback или частной локальной сети |
+| `webui_lan_listen` | `192.168.1.1:8787` | Дополнительный адрес для прямого входа из LAN; пустая строка отключает его. Даже в старом конфиге без поля применяется значение по умолчанию |
 | `probe_timeout_seconds` | `12` | Таймаут одной HTTP-пробы, 1..120 |
 | `http_timeout_seconds` | `30` | Загрузка подписки, 1..120 |
 | `api_timeout_seconds` | `10` | API deadline; на сам CLI есть небольшой дополнительный запас |

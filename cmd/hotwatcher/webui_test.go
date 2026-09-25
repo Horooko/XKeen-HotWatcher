@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -78,5 +79,45 @@ func TestWebUIRequiresSessionAndCSRFToEditSites(t *testing.T) {
 	sites, err := w.engine.URLTestSites()
 	if err != nil || len(sites) != 2 || sites[0] != "https://example.com/" {
 		t.Fatalf("Web UI did not apply site list: %v, %v", sites, err)
+	}
+	lanRequest := httptest.NewRequest("POST", "http://"+c.WebUILANListen+"/api/login", strings.NewReader(`{"token":"`+w.token+`"}`))
+	lanRequest.Header.Set("Content-Type", "application/json")
+	lanLogin := httptest.NewRecorder()
+	handler.ServeHTTP(lanLogin, lanRequest)
+	if lanLogin.Code != 200 {
+		t.Fatalf("LAN host rejected: %d %s", lanLogin.Code, lanLogin.Body.String())
+	}
+	var lanSession struct {
+		CSRF string `json:"csrf"`
+	}
+	if err := json.Unmarshal(lanLogin.Body.Bytes(), &lanSession); err != nil || lanSession.CSRF == "" {
+		t.Fatalf("LAN login missing CSRF: %v", err)
+	}
+	lanEdit := httptest.NewRequest("PUT", "http://"+c.WebUILANListen+"/api/sites", strings.NewReader(`{"sites":["http://example.com"]}`))
+	lanEdit.Header.Set("Content-Type", "application/json")
+	lanEdit.Header.Set("Origin", "http://"+c.WebUILANListen)
+	lanEdit.Header.Set("X-HW-CSRF", lanSession.CSRF)
+	lanEdit.AddCookie(lanLogin.Result().Cookies()[0])
+	lanEditResponse := httptest.NewRecorder()
+	handler.ServeHTTP(lanEditResponse, lanEdit)
+	if lanEditResponse.Code != 400 {
+		t.Fatalf("LAN CSRF validation failed: %d %s", lanEditResponse.Code, lanEditResponse.Body.String())
+	}
+	oldToken := w.token
+	newToken := "new-private-panel-token-2026"
+	if err := setWebToken(c, "short"); err == nil {
+		t.Fatal("short token accepted")
+	}
+	if err := setWebToken(c, newToken); err != nil {
+		t.Fatal(err)
+	}
+	if got := call("GET", "/api/session", nil, cookie, ""); got.Code != 200 || !strings.Contains(got.Body.String(), `"authenticated":false`) {
+		t.Fatalf("old session stayed valid after token change: %d %s", got.Code, got.Body.String())
+	}
+	if got := call("POST", "/api/login", []byte(`{"token":"`+oldToken+`"}`), nil, ""); got.Code != 401 {
+		t.Fatalf("old token stayed valid: %d %s", got.Code, got.Body.String())
+	}
+	if got := call("POST", "/api/login", []byte(`{"token":"`+newToken+`"}`), nil, ""); got.Code != 200 {
+		t.Fatalf("new token login failed: %d %s", got.Code, got.Body.String())
 	}
 }
