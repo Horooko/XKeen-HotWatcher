@@ -234,11 +234,13 @@ func (e *Engine) DNSStatus() (DNSStatus, error) {
 				status.Note = "DNS-файл изменился после включения; автоматический откат требует проверки"
 			}
 			status.RuntimeActivationUnverified = true // Live DNS state is not exposed by Xray API.
+		} else {
+			status.Note = "резервная копия DNS указывает на другой файл; требуется ручная проверка"
 		}
 	} else if !os.IsNotExist(err) {
 		return status, errors.New("повреждён файл резервной копии DNS")
 	}
-	if src.created {
+	if src.created && status.Note == "" {
 		status.Note = "DNS-фрагмент Xray отсутствует; текущий Xray использует системный DNS"
 	}
 	return status, nil
