@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 )
@@ -19,25 +18,39 @@ func xkeen(action string) error {
 	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0111 == 0 {
 		return errors.New("не найден исполняемый /opt/sbin/xkeen")
 	}
-	if _, err = exec.Command(xkeenCommand, action).CombinedOutput(); err != nil {
+	cmd := exec.Command(xkeenCommand, action)
+	// XKeen detaches start/stop when it has no terminal. Keep the operator's
+	// terminal so its real completion and diagnostics remain visible.
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	if err = cmd.Run(); err != nil {
 		return fmt.Errorf("xkeen %s завершился с ошибкой: %w", action, err)
 	}
 	return nil
 }
 
-func watcherRunning() (bool, error) {
-	out, err := exec.Command("/opt/etc/init.d/S99hotwatcher", "status").CombinedOutput()
-	if err != nil {
-		return false, fmt.Errorf("не удалось проверить службу Hot Watcher: %w", err)
+func waitXrayReady(engine *hw.Engine, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	lastStage := "API списка узлов"
+	for {
+		lastStage = "API списка узлов"
+		if _, err := engine.R.List(); err == nil {
+			lastStage = "API балансировщика"
+			if _, err = engine.R.Balance(); err == nil {
+				return nil
+			}
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("XKeen запущен, но %s Xray недоступен; подписка сохранена для просмотра через keys, применение отложено", lastStage)
+		}
+		time.Sleep(time.Second)
 	}
-	return strings.Contains(string(out), "Hot Watcher PID:"), nil
 }
 
 func fetchWithoutVPN(stop, start func() error, fetch func() ([]byte, error)) (body []byte, err error) {
 	// Even a failing stop may have changed routing; restore in every case.
 	defer func() {
 		if startErr := start(); startErr != nil {
-			err = errors.Join(err, fmt.Errorf("не удалось вернуть VPN: %w", startErr))
+			err = errors.Join(err, fmt.Errorf("после прямой загрузки: %w", startErr))
 		}
 	}()
 	if err = stop(); err != nil {
@@ -46,25 +59,22 @@ func fetchWithoutVPN(stop, start func() error, fetch func() ([]byte, error)) (bo
 	return fetch()
 }
 
-func waitXrayAPI(engine *hw.Engine, reachable bool, timeout time.Duration) error {
+func waitXrayStopped(engine *hw.Engine, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for {
 		_, err := engine.R.List()
-		if (err == nil) == reachable {
+		if err != nil {
 			return nil
 		}
 		if time.Now().After(deadline) {
-			if reachable {
-				return errors.New("API Xray не стал доступен после запуска XKeen")
-			}
 			return errors.New("Xray не остановился после команды xkeen -stop")
 		}
 		time.Sleep(time.Second)
 	}
 }
 
-// The download is made while XKeen is off. The resulting bytes stay in memory
-// and are handed to the ordinary transactional Sync after XKeen returns.
+// Download and probes run while XKeen is off. Parsed nodes stay in memory and
+// are handed to the ordinary transaction after XKeen returns.
 func hardSync(c hw.Config, engine *hw.Engine) (err error) {
 	status, err := engine.Status()
 	if err != nil {
@@ -95,31 +105,11 @@ func hardSync(c hw.Config, engine *hw.Engine) (err error) {
 		return errors.New("не найден исполняемый /opt/sbin/xkeen")
 	}
 
-	running, err := watcherRunning()
-	if err != nil {
-		return err
-	}
-	if running {
-		if err = initService("stop"); err != nil {
-			return err
-		}
-		defer func() {
-			if startErr := initService("start"); startErr != nil {
-				err = errors.Join(err, startErr)
-				return
-			}
-			time.Sleep(time.Second)
-			active, statusErr := watcherRunning()
-			if statusErr != nil || !active {
-				err = errors.Join(err, errors.New("служба Hot Watcher не запустилась после hard-sync"))
-			}
-		}()
-	}
-
 	interrupt := make(chan os.Signal, 1)
 	signal.Notify(interrupt, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(interrupt)
-	return hw.WithLock(c, func() (syncErr error) {
+	fmt.Println("Подготавливаю ручную синхронизацию; текущая проверка может задержать начало…")
+	return hw.WithLockWait(c, 3*time.Minute, func() (syncErr error) {
 		lockedStatus, statusErr := engine.Status()
 		if statusErr != nil {
 			return statusErr
@@ -133,12 +123,18 @@ func hardSync(c hw.Config, engine *hw.Engine) (err error) {
 			if stopErr := xkeen("-stop"); stopErr != nil {
 				return stopErr
 			}
-			return waitXrayAPI(engine, false, 30*time.Second)
+			return waitXrayStopped(engine, 30*time.Second)
 		}, func() error {
-			if startErr := xkeen("-start"); startErr != nil {
-				return startErr
+			startErr := xkeen("-start")
+			fmt.Println("Ожидаю API списка узлов и балансировщика после запуска XKeen…")
+			readyErr := waitXrayReady(engine, 60*time.Second)
+			if readyErr == nil {
+				if startErr != nil {
+					fmt.Println("XKeen сообщил об ошибке запуска, но оба API Xray доступны.")
+				}
+				return nil
 			}
-			return waitXrayAPI(engine, true, 30*time.Second)
+			return errors.Join(startErr, readyErr)
 		}, func() ([]byte, error) {
 			fmt.Println("XKeen остановлен. Загружаю подписку напрямую…")
 			b, fetchErr := engine.Fetcher(c)
@@ -150,18 +146,24 @@ func hardSync(c hw.Config, engine *hw.Engine) (err error) {
 				return nil, parseErr
 			}
 			fmt.Println("Проверяю ключи без VPN…")
-			for _, node := range parsed.Nodes {
+			for i, node := range parsed.Nodes {
+				fmt.Printf("Ключ %d/%d: ", i+1, len(parsed.Nodes))
 				if latency, probeErr := engine.R.ProbeLatency(node); probeErr == nil {
 					verified[node.Tag] = latency
-					prepared.Nodes = append(prepared.Nodes, node)
+					fmt.Printf("работает (%.0f мс)\n", float64(latency.Microseconds())/1000)
+				} else {
+					fmt.Println("недоступен")
 				}
 			}
-			prepared.Skipped = parsed.Skipped
+			prepared = parsed
+			if cacheErr := engine.SaveFetched(parsed, verified, true); cacheErr != nil {
+				return nil, cacheErr
+			}
 			if len(verified) == 0 {
 				return nil, errors.New("ни один ключ не прошёл проверку без VPN; старые ключи сохранены")
 			}
-			if len(prepared.Nodes) < len(parsed.Nodes) {
-				fmt.Printf("Недоступных ключей пропущено: %d. Применяю только проверенные.\n", len(parsed.Nodes)-len(prepared.Nodes))
+			if len(verified) < len(parsed.Nodes) {
+				fmt.Printf("Недоступных ключей: %d. Они останутся в списке, но не будут выбраны.\n", len(parsed.Nodes)-len(verified))
 			}
 			return b, nil
 		})

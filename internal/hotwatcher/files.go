@@ -13,6 +13,8 @@ import (
 	"time"
 )
 
+var ErrBusy = errors.New("another Hot Watcher operation is in progress")
+
 func digest(b []byte) string { h := sha256.Sum256(b); return hex.EncodeToString(h[:]) }
 func encode(v any) []byte    { b, _ := json.MarshalIndent(v, "", "  "); return append(b, '\n') }
 func regular(path string) error {
@@ -137,7 +139,10 @@ func lock(dir string) (func(), error) {
 	}
 	if e = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); e != nil {
 		f.Close()
-		return nil, errors.New("another Hot Watcher operation is in progress")
+		if errors.Is(e, syscall.EWOULDBLOCK) || errors.Is(e, syscall.EAGAIN) {
+			return nil, ErrBusy
+		}
+		return nil, fmt.Errorf("Hot Watcher lock failed: %w", e)
 	}
 	return func() { syscall.Flock(int(f.Fd()), syscall.LOCK_UN); f.Close() }, nil
 }

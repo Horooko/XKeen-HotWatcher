@@ -41,6 +41,7 @@ type Engine struct {
 	// VerifiedLatencies is used only by an explicit hard-sync operation. Its
 	// probes run while XKeen is stopped and must be discarded afterwards.
 	VerifiedLatencies map[string]time.Duration
+	UnreachableCount  int
 }
 
 func New(c Config) *Engine {
@@ -50,11 +51,17 @@ func (e *Engine) probe(node Node) error {
 	if _, ok := e.VerifiedLatencies[node.Tag]; ok {
 		return nil
 	}
+	if e.VerifiedLatencies != nil {
+		return errors.New("candidate was not verified during direct sync")
+	}
 	return e.R.Probe(node)
 }
 func (e *Engine) probeLatency(node Node) (time.Duration, error) {
 	if latency, ok := e.VerifiedLatencies[node.Tag]; ok {
 		return latency, nil
+	}
+	if e.VerifiedLatencies != nil {
+		return 0, errors.New("candidate was not verified during direct sync")
 	}
 	return e.R.ProbeLatency(node)
 }
@@ -121,8 +128,9 @@ func (e *Engine) Plan() (map[string]any, error) {
 	return map[string]any{"supported_nodes": len(p.Nodes), "ignored_non_vless": p.Skipped, "new_or_changed": added, "configuration_changed": !sameNodes(current, p.Nodes), "runtime_modified": false}, nil
 }
 
-// Sync must run under the filesystem lock. All staged nodes pass an isolated
-// end-to-end HTTP probe before being added to the production process.
+// Sync must run under the filesystem lock. The selected node must pass an
+// isolated end-to-end HTTP probe; unreachable nodes remain available for
+// future checks but are not selected.
 func (e *Engine) Sync(adopt bool) error { return e.sync(adopt, nil) }
 
 // SyncPrepared applies an already downloaded and validated subscription. It is
@@ -130,6 +138,7 @@ func (e *Engine) Sync(adopt bool) error { return e.sync(adopt, nil) }
 func (e *Engine) SyncPrepared(parsed Parsed) error { return e.sync(false, &parsed) }
 
 func (e *Engine) sync(adopt bool, prepared *Parsed) error {
+	e.UnreachableCount = 0
 	if err := e.ensureSubscriptionMode(); err != nil {
 		return err
 	}
@@ -173,6 +182,11 @@ func (e *Engine) sync(adopt bool, prepared *Parsed) error {
 			return errors.New("prepared subscription has no valid nodes")
 		}
 	}
+	if prepared == nil {
+		if cacheErr := e.SaveFetched(parsed, nil, false); cacheErr != nil {
+			e.event("fetched_inventory_write_failed", map[string]any{"message": cacheErr.Error()})
+		}
+	}
 	nodes := parsed.Nodes
 	tags, er := e.R.List()
 	if er != nil {
@@ -186,7 +200,7 @@ func (e *Engine) sync(adopt bool, prepared *Parsed) error {
 		if er = e.reconcile(s, tags); er != nil {
 			return er
 		}
-		if e.C.SelectionPolicy == "latency" {
+		if e.C.SelectionPolicy == "latency" || e.VerifiedLatencies != nil {
 			selected, probeErr := e.fastest(nodes, s.Active, tags, s.Selected)
 			if probeErr != nil {
 				return probeErr
@@ -222,7 +236,7 @@ func (e *Engine) sync(adopt bool, prepared *Parsed) error {
 		previousIdentity = legacyIdentity(oldFile, oldTarget)
 	}
 	selected := choose(nodes, oldTarget, previousIdentity, e.C.PreferredName)
-	if e.C.SelectionPolicy == "latency" {
+	if e.C.SelectionPolicy == "latency" || e.VerifiedLatencies != nil {
 		selected, er = e.fastest(nodes, oldNodes, tags, selected)
 		if er != nil {
 			return er
@@ -290,18 +304,15 @@ func (e *Engine) sync(adopt bool, prepared *Parsed) error {
 }
 
 // fastest measures the complete HTTPS request through each isolated VLESS
-// outbound. New or missing production nodes must pass before any transaction
-// starts; failed existing nodes are excluded from this round of selection.
+// outbound. Unreachable nodes remain in the pool but are never selected.
+// If no node passes, the old configuration is kept.
 func (e *Engine) fastest(nodes, oldNodes []Node, tags map[string]bool, fallback string) (string, error) {
 	best := ""
 	bestLatency := time.Duration(0)
 	for _, n := range nodes {
 		latency, err := e.probeLatency(n)
 		if err != nil {
-			_, known := findNode(oldNodes, n.Tag)
-			if !known || !tags[n.Tag] {
-				return "", fmt.Errorf("candidate %s failed health check; old configuration kept: %w", n.Tag, err)
-			}
+			e.UnreachableCount++
 			continue
 		}
 		if best == "" || latency < bestLatency || (latency == bestLatency && n.Tag == fallback) {
@@ -597,6 +608,7 @@ func (e *Engine) Status() (map[string]any, error) {
 		}
 	}
 	b, be := e.R.Balance()
+	m["balancer_api_reachable"] = be == nil
 	if be == nil {
 		m["runtime_override"] = b.Override
 		m["balancer_pin_matches"] = s != nil && s.Selected == b.Override
@@ -747,6 +759,7 @@ type KeysReport struct {
 	LastCheckAgo     *time.Duration
 	LastCheckSuccess *bool
 	SelectedAgo      *time.Duration
+	APIWarning       string
 }
 
 // Keys measures each owned outbound through a separate loopback-only Xray
@@ -767,10 +780,9 @@ func (e *Engine) Keys() (KeysReport, error) {
 	}
 	bal, err := e.R.Balance()
 	if err != nil {
-		return report, err
-	}
-	if bal.Override != s.Selected {
-		return report, errors.New("live selection differs from saved state; run reconcile before keys")
+		report.APIWarning = "API балансировщика недоступен; активный ключ показан по сохранённому состоянию"
+	} else if bal.Override != s.Selected {
+		report.APIWarning = "выбор в Xray отличается от сохранённого; активный ключ показан по сохранённому состоянию"
 	}
 	node, ok := findNode(s.Active, s.Selected)
 	if !ok {
@@ -1016,6 +1028,19 @@ func WithLock(c Config, fn func() error) error {
 		return err
 	}
 	return fn()
+}
+func WithLockWait(c Config, timeout time.Duration, fn func() error) error {
+	deadline := time.Now().Add(timeout)
+	for {
+		err := WithLock(c, fn)
+		if !errors.Is(err, ErrBusy) {
+			return err
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("Hot Watcher is still busy after %s: %w", timeout, err)
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
 }
 func SafeLog(c Config, event string, fields map[string]any) { _ = logEvent(c.StateDir, event, fields) }
 func WriteLastCheck(c Config, ok bool) {

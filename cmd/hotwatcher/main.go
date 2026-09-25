@@ -23,7 +23,8 @@ func usage() {
 Использование: hotwatcher [--config ПУТЬ] КОМАНДА
 
 Основные команды:
-  keys           Показать активный ключ и проверить задержку остальных
+  keys           Сразу показать все ключи последней загрузки и сохранённые ключи
+  keys --check   Заново измерить доступность применённых ключей (может быть долго)
   sync           Обновить ключи подписки при работающем VPN
   hard-sync      Остановить XKeen, скачать подписку напрямую, запустить XKeen и применить ключи
   check-key      Проверить активный ключ и при сбое выбрать рабочий
@@ -31,6 +32,7 @@ func usage() {
   status         Показать состояние службы и выбранный ключ
   stop           Перейти на статический ключ и остановить службу подписки
   start          Вернуться к ключам подписки и запустить службу
+  update         Проверить и установить доступное обновление программы
 
 Подробности: hotwatcher help advanced
 `)
@@ -46,7 +48,7 @@ func advancedUsage() {
   gc                 Удалить старые узлы после периода ожидания
   recover|abort      Завершить или откатить прерванное применение
   url set|migrate    Сохранить URL (set читает его из стандартного ввода)
-  update КОМАНДА     Обновление программы: check|status|download|apply|rollback
+  update КОМАНДА     Дополнительно: check|status|download|apply|rollback
   config-example     Показать пример конфигурации без секретов
   version [--json]   Показать версию
   daemon             Запустить службу на переднем плане
@@ -157,6 +159,18 @@ func run() error {
 		case "nodes":
 			v, er = engine.Nodes()
 		case "keys":
+			if len(args) == 1 {
+				var inventory hw.KeyInventory
+				inventory, er = engine.KeysSnapshot()
+				if er == nil {
+					printKeyInventory(inventory)
+				}
+				return er
+			}
+			if len(args) != 2 || args[1] != "--check" {
+				return errors.New("использование: hotwatcher keys [--check]")
+			}
+			fmt.Println("Проверяю применённые ключи; проверка может занять несколько минут…")
 			var keys hw.KeysReport
 			keys, er = engine.Keys()
 			if er == nil {
@@ -214,6 +228,9 @@ func run() error {
 		case "sync":
 			er := engine.Sync(false)
 			hw.WriteLastCheck(c, er == nil)
+			if er == nil && engine.UnreachableCount > 0 {
+				fmt.Printf("Недоступных ключей в подписке: %d. Они сохранены в списке, выбран проверенный ключ.\n", engine.UnreachableCount)
+			}
 			return er
 		case "reconcile":
 			return engine.Reconcile()
@@ -338,6 +355,9 @@ func serviceMode(c hw.Config, engine *hw.Engine, action string) error {
 }
 
 func printKeys(v hw.KeysReport) {
+	if v.APIWarning != "" {
+		fmt.Println("Внимание:", v.APIWarning)
+	}
 	if len(v.Keys) == 0 {
 		fmt.Println("Ключей нет")
 		return
@@ -364,6 +384,52 @@ func printKeys(v hw.KeysReport) {
 			fmt.Printf("- %s [%s] — %s\n", key.Name, key.Tag, pingText(key.PingMS))
 		}
 	}
+}
+
+func printKeyInventory(v hw.KeyInventory) {
+	fmt.Println("Ключи по сохранённому состоянию (без обращения к Xray API):")
+	if v.LastCheckAgo != nil {
+		result := "ошибка"
+		if v.LastCheckSuccess != nil && *v.LastCheckSuccess {
+			result = "успешно"
+		}
+		fmt.Printf("С последней проверки подписки: %s (%s)\n", ageText(*v.LastCheckAgo), result)
+	}
+	if v.SelectedAgo != nil {
+		fmt.Printf("С последней смены ключа: %s\n", ageText(*v.SelectedAgo))
+	}
+	if v.FetchedAt != nil {
+		fmt.Printf("Последняя загрузка: %s\n", v.FetchedAt.Local().Format("2006-01-02 15:04:05"))
+	}
+	if v.Note != "" {
+		fmt.Println(v.Note)
+	}
+	for _, key := range v.Keys {
+		parts := []string{}
+		if key.Selected {
+			parts = append(parts, "выбран по сохранённому состоянию")
+		}
+		if key.Applied {
+			parts = append(parts, "применён")
+		} else {
+			parts = append(parts, "не применён")
+		}
+		if key.Latest {
+			if key.Checked {
+				if key.Verified {
+					parts = append(parts, "проверен без VPN: "+pingText(key.LatencyMS))
+				} else {
+					parts = append(parts, "не прошёл проверку без VPN")
+				}
+			} else {
+				parts = append(parts, "из последней подписки")
+			}
+		} else if v.FetchedAt != nil {
+			parts = append(parts, "отсутствует в последней подписке")
+		}
+		fmt.Printf("- %s [%s] — %s\n", key.Name, key.Tag, strings.Join(parts, ", "))
+	}
+	fmt.Println("Для новой проверки применённых ключей: hotwatcher keys --check")
 }
 
 func pingText(ms *float64) string {

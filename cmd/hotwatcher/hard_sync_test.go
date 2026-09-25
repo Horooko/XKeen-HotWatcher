@@ -2,9 +2,49 @@ package main
 
 import (
 	"errors"
+	hw "local/xkeen-hot-watcher/internal/hotwatcher"
 	"strings"
 	"testing"
+	"time"
 )
+
+type readyRuntime struct{ listErr, balanceErr bool }
+
+func (r readyRuntime) List() (map[string]bool, error) {
+	if r.listErr {
+		return nil, errors.New("unavailable")
+	}
+	return map[string]bool{}, nil
+}
+func (r readyRuntime) Balance() (hw.Balance, error) {
+	if r.balanceErr {
+		return hw.Balance{}, errors.New("unavailable")
+	}
+	return hw.Balance{}, nil
+}
+func (readyRuntime) Add(hw.Node) error                           { return nil }
+func (readyRuntime) Remove(string) error                         { return nil }
+func (readyRuntime) Override(string) error                       { return nil }
+func (readyRuntime) Validate([]hw.Node, string) error            { return nil }
+func (readyRuntime) Probe(hw.Node) error                         { return nil }
+func (readyRuntime) ProbeLatency(hw.Node) (time.Duration, error) { return 0, nil }
+
+func TestWaitXrayReadyChecksBalancerAsWellAsList(t *testing.T) {
+	for _, test := range []struct {
+		runtime readyRuntime
+		want    string
+	}{
+		{readyRuntime{}, ""},
+		{readyRuntime{balanceErr: true}, "API балансировщика"},
+		{readyRuntime{listErr: true}, "API списка узлов"},
+	} {
+		e := &hw.Engine{R: test.runtime}
+		err := waitXrayReady(e, 0)
+		if test.want == "" && err != nil || test.want != "" && (err == nil || !strings.Contains(err.Error(), test.want)) {
+			t.Fatalf("runtime=%+v err=%v; want %q", test.runtime, err, test.want)
+		}
+	}
+}
 
 func TestFetchWithoutVPNRestoresAfterFailure(t *testing.T) {
 	for _, fail := range []string{"stop", "fetch", "start"} {

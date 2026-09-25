@@ -9,7 +9,7 @@
 /opt/sbin/hotwatcher update status
 ```
 
-`enable --notify` оставляет только проверки. `disable` прекращает проверки программы, `pause on|off` откладывает её замену, `pin VERSION` ограничивает выбранную версию. `hold on` из Hot Watcher также откладывает установку. Эти действия не отменяют расписание подписки. Команды `check`, `download` и `apply` соответственно проверяют доступность, скачивают проверенный asset и выполняют замену. `apply` повторяет все проверки; обхода подписи нет.
+`enable --notify` оставляет только проверки. `disable` прекращает проверки программы, `pause on|off` откладывает её замену, `pin VERSION` ограничивает выбранную версию. `hold on` из Hot Watcher также откладывает установку. Эти действия не отменяют расписание подписки. Для ручного обновления достаточно `hotwatcher update`: команда проверяет релиз, скачивает пакет и применяет его. `check`, `download` и `apply` доступны отдельно. Все пути проверяют подпись и хеш.
 
 Установленный updater `v0.2.4` отклоняет обычные поля `url` в ответе GitHub Releases.
 Если `hotwatcher update status` работает, а `hotwatcher update check` отвечает
@@ -41,8 +41,7 @@ xkeen -xtest
 
 ```sh
 /opt/sbin/hotwatcher update status
-/opt/sbin/hotwatcher update check
-/opt/sbin/hotwatcher update apply
+/opt/sbin/hotwatcher update
 /opt/sbin/hotwatcher version --json
 /opt/sbin/hotwatcher status
 ```
