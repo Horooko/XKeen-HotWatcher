@@ -105,6 +105,52 @@ func setupEngine(t *testing.T) (*Engine, *fakeRuntime, *string) {
 	e.Now = func() time.Time { return time.Date(2026, 9, 15, 1, 0, 0, 0, time.UTC) }
 	return e, r, &raw
 }
+func TestSyncUsesProbesVerifiedBeforeVPNRestart(t *testing.T) {
+	e, r, _ := setupEngine(t)
+	if err := e.Sync(true); err != nil {
+		t.Fatal(err)
+	}
+	s, err := e.state()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.probes = nil
+	r.failProbe = true
+	e.VerifiedLatencies = map[string]time.Duration{s.Selected: 25 * time.Millisecond}
+	if err := e.Sync(false); err != nil {
+		t.Fatal(err)
+	}
+	if len(r.probes) != 0 {
+		t.Fatalf("VPN-dependent probe repeated: %v", r.probes)
+	}
+}
+func TestSyncPreparedAppliesOnlyDirectlyVerifiedNodes(t *testing.T) {
+	e, r, raw := setupEngine(t)
+	if err := e.Sync(true); err != nil {
+		t.Fatal(err)
+	}
+	*raw = uri(testUUID, "FI") + "\n" + uri("00000000-0000-4000-8000-000000000002", "DE") + "\n" + uri("00000000-0000-4000-8000-000000000003", "US")
+	parsed, err := Parse([]byte(*raw), e.C)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared := Parsed{Nodes: parsed.Nodes[:2]}
+	e.VerifiedLatencies = map[string]time.Duration{}
+	for _, node := range prepared.Nodes {
+		e.VerifiedLatencies[node.Tag] = 20 * time.Millisecond
+	}
+	r.failProbe = true
+	if err := e.SyncPrepared(prepared); err != nil {
+		t.Fatal(err)
+	}
+	s, err := e.state()
+	if err != nil || len(s.Active) != 2 {
+		t.Fatalf("state=%+v err=%v", s, err)
+	}
+	if _, exists := findNode(s.Active, parsed.Nodes[2].Tag); exists {
+		t.Fatal("unverified key was applied")
+	}
+}
 func TestAdoptBacksUpAndDoesNotRemoveLegacy(t *testing.T) {
 	e, r, _ := setupEngine(t)
 	old, _ := os.ReadFile(outputFile(e.C))

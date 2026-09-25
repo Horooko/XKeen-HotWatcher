@@ -31,6 +31,27 @@ func TestCLIInformationalCommands(t *testing.T) {
 	}
 }
 
+func TestHelpKeepsAdvancedCommandsOutOfBasicView(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := os.Stdout
+	os.Stdout = w
+	usage()
+	w.Close()
+	os.Stdout = old
+	b, err := io.ReadAll(r)
+	r.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(b)
+	if !strings.Contains(s, "hard-sync") || !strings.Contains(s, "Остановить XKeen") || strings.Contains(s, "recover|abort") {
+		t.Fatal("basic help is missing the recovery command or contains advanced commands")
+	}
+}
+
 func TestKeysOutputStartsWithActiveKey(t *testing.T) {
 	activePing, otherPing := 27.5, 61.2
 	checkAgo, selectedAgo := 15*time.Minute+4*time.Second, 2*time.Hour
@@ -82,6 +103,27 @@ func TestCLIHoldStatusAndErrors(t *testing.T) {
 		if e := invoke(t, append([]string{"--config", c}, args...)...); e == nil {
 			t.Fatal("expected error", args)
 		}
+	}
+}
+func TestKeysDoesNotWaitForSubscriptionLock(t *testing.T) {
+	path := testConfig(t)
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var c hw.Config
+	if err = json.Unmarshal(b, &c); err != nil {
+		t.Fatal(err)
+	}
+	err = hw.WithLock(c, func() error {
+		keyErr := invoke(t, "--config", path, "keys")
+		if keyErr == nil || strings.Contains(keyErr.Error(), "another Hot Watcher operation") {
+			t.Fatalf("keys should reach its read-only state check: %v", keyErr)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }
 func TestCLIPlanLoopbackSubscription(t *testing.T) {

@@ -38,10 +38,25 @@ type Engine struct {
 	R       Runtime
 	Fetcher func(Config) ([]byte, error)
 	Now     func() time.Time
+	// VerifiedLatencies is used only by an explicit hard-sync operation. Its
+	// probes run while XKeen is stopped and must be discarded afterwards.
+	VerifiedLatencies map[string]time.Duration
 }
 
 func New(c Config) *Engine {
 	return &Engine{C: c, R: Xray{c}, Fetcher: Fetch, Now: func() time.Time { return time.Now().UTC() }}
+}
+func (e *Engine) probe(node Node) error {
+	if _, ok := e.VerifiedLatencies[node.Tag]; ok {
+		return nil
+	}
+	return e.R.Probe(node)
+}
+func (e *Engine) probeLatency(node Node) (time.Duration, error) {
+	if latency, ok := e.VerifiedLatencies[node.Tag]; ok {
+		return latency, nil
+	}
+	return e.R.ProbeLatency(node)
 }
 func (e *Engine) statePath() string   { return filepath.Join(e.C.StateDir, "state.json") }
 func (e *Engine) journalPath() string { return filepath.Join(e.C.StateDir, "pending.json") }
@@ -108,7 +123,13 @@ func (e *Engine) Plan() (map[string]any, error) {
 
 // Sync must run under the filesystem lock. All staged nodes pass an isolated
 // end-to-end HTTP probe before being added to the production process.
-func (e *Engine) Sync(adopt bool) error {
+func (e *Engine) Sync(adopt bool) error { return e.sync(adopt, nil) }
+
+// SyncPrepared applies an already downloaded and validated subscription. It is
+// used by hard-sync after the direct download and isolated probes finish.
+func (e *Engine) SyncPrepared(parsed Parsed) error { return e.sync(false, &parsed) }
+
+func (e *Engine) sync(adopt bool, prepared *Parsed) error {
 	if err := e.ensureSubscriptionMode(); err != nil {
 		return err
 	}
@@ -136,13 +157,21 @@ func (e *Engine) Sync(adopt bool) error {
 	if er = checkSelector(e.C); er != nil {
 		return er
 	}
-	b, er := e.Fetcher(e.C)
-	if er != nil {
-		return er
-	}
-	parsed, er := Parse(b, e.C)
-	if er != nil {
-		return er
+	var parsed Parsed
+	if prepared == nil {
+		b, fetchErr := e.Fetcher(e.C)
+		if fetchErr != nil {
+			return fetchErr
+		}
+		parsed, er = Parse(b, e.C)
+		if er != nil {
+			return er
+		}
+	} else {
+		parsed = *prepared
+		if len(parsed.Nodes) == 0 || len(parsed.Nodes) > e.C.MaxNodes {
+			return errors.New("prepared subscription has no valid nodes")
+		}
 	}
 	nodes := parsed.Nodes
 	tags, er := e.R.List()
@@ -202,7 +231,7 @@ func (e *Engine) Sync(adopt bool) error {
 		for _, n := range nodes {
 			_, known := findNode(oldNodes, n.Tag)
 			if !known || !tags[n.Tag] {
-				if er = e.R.Probe(n); er != nil {
+				if er = e.probe(n); er != nil {
 					return fmt.Errorf("candidate %s failed health check; old configuration kept: %w", n.Tag, er)
 				}
 			}
@@ -267,7 +296,7 @@ func (e *Engine) fastest(nodes, oldNodes []Node, tags map[string]bool, fallback 
 	best := ""
 	bestLatency := time.Duration(0)
 	for _, n := range nodes {
-		latency, err := e.R.ProbeLatency(n)
+		latency, err := e.probeLatency(n)
 		if err != nil {
 			_, known := findNode(oldNodes, n.Tag)
 			if !known || !tags[n.Tag] {
@@ -547,7 +576,7 @@ func (e *Engine) Status() (map[string]any, error) {
 	if er != nil {
 		return nil, er
 	}
-	m := map[string]any{"version": Version, "adopted": s != nil, "hold": e.held(), "pending_transaction": e.pending(), "automatic_gc": e.C.AutoGC, "selection_policy": e.C.SelectionPolicy, "update_interval_seconds": e.C.IntervalSeconds, "hotwatcher_restarts_xray": false, "static_fallback_mode": mode != nil}
+	m := map[string]any{"version": Version, "adopted": s != nil, "hold": e.held(), "pending_transaction": e.pending(), "automatic_gc": e.C.AutoGC, "selection_policy": e.C.SelectionPolicy, "update_interval_seconds": e.C.IntervalSeconds, "hotwatcher_restarts_xray": false, "hard_sync_restarts_xray": true, "static_fallback_mode": mode != nil}
 	if mode != nil {
 		m["static_fallback_alias"] = staticAlias
 	}
@@ -722,6 +751,8 @@ type KeysReport struct {
 
 // Keys measures each owned outbound through a separate loopback-only Xray
 // process. It reads the production pin but never changes it or the schedule.
+// The CLI runs it without the subscription lock so a long daemon probe does
+// not block inspection; a concurrent pin change may require a retry.
 func (e *Engine) Keys() (KeysReport, error) {
 	report := KeysReport{}
 	if err := e.ensureSubscriptionMode(); err != nil {
@@ -844,7 +875,7 @@ func (e *Engine) Select(identifier string) error {
 	if bal.Override != s.Selected {
 		return errors.New("live selection differs from saved state; run reconcile before select")
 	}
-	if er = e.R.Probe(node); er != nil {
+	if er = e.probe(node); er != nil {
 		return er
 	}
 	if tag == s.Selected {
