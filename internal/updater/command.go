@@ -15,7 +15,7 @@ import (
 
 func Command(args []string) error {
 	if len(args) == 0 {
-		return errors.New("update requires check|status|download|apply|rollback|enable|disable|pause|pin|unpin|retry")
+		args = []string{"apply"}
 	}
 	if err := ensureDir(Root); err != nil {
 		return err
@@ -55,6 +55,9 @@ func Command(args []string) error {
 		fmt.Println(string(b))
 		return nil
 	case "check", "download", "apply":
+		if args[0] == "apply" {
+			fmt.Println("Проверяю подписанный релиз и доступность обновления…")
+		}
 		unlock, lockErr := lock()
 		if lockErr != nil {
 			return lockErr
@@ -86,8 +89,8 @@ func Command(args []string) error {
 			if saveErr != nil {
 				return saveErr
 			}
-			if errors.Is(e, ErrNoUpdate) && args[0] == "check" {
-				fmt.Println("No compatible signed update")
+			if errors.Is(e, ErrNoUpdate) {
+				fmt.Println("Подходящих новых версий нет.")
 				return nil
 			}
 			return e
@@ -102,18 +105,23 @@ func Command(args []string) error {
 		}
 		unlock()
 		if args[0] == "check" {
-			fmt.Println("Signed update available:", m.Version)
+			fmt.Println("Доступна подписанная версия:", m.Version)
+			fmt.Println("Установить: hotwatcher update")
 			return nil
 		}
 		p, e := download(ctx, r, a, c)
 		if e != nil {
 			return e
 		}
-		fmt.Println("Verified asset staged:", a.SHA256)
+		fmt.Println("Пакет скачан и проверен:", m.Version)
 		if args[0] == "download" {
 			return nil
 		}
-		return apply(ctx, c, m, a, p, &s)
+		if err := apply(ctx, c, m, a, p, &s); err != nil {
+			return err
+		}
+		fmt.Println("Обновление установлено:", m.Version)
+		return nil
 	case "rollback":
 		return errors.New("manual rollback requires a separate verified local-release selection; automatic recovery uses pending journal")
 	case "enable":

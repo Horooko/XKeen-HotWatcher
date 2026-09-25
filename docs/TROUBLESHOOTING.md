@@ -27,7 +27,8 @@ cat /opt/var/lib/hotwatcher/last-check.json
 | `unsupported or repeated VLESS parameter` | Сверить docs/SUBSCRIPTIONS.md; не удалять нужный параметр вслепую |
 | `TLS node ... allow_tls_nodes is false` | Для нужных VLESS+TLS включить этот параметр; сертификаты всё равно проверяются |
 | `staged full ... failed validation` | Проверить `xray_asset_dir`, наличие ext:*.dat, поддержку новых узлов установленным Xray |
-| `candidate ... failed health check` | Узел не дал HTTP 204 через изолированный клиент; старый пул сохранён |
+| `all active nodes failed HTTPS latency probes` | Ни один узел подписки не дал HTTP 204 через изолированный клиент; старый выбор сохранён. Посмотри `keys`, затем `keys --check` для повторной проверки применённых ключей |
+| `XKeen запущен, но API ... недоступен` | XKeen вернулся, но применение отложено из-за API. `keys` покажет загруженные и сохранённые ключи; проверь `xkeen -status`, `hotwatcher doctor` и журналы XKeen/Xray |
 | `another Hot Watcher operation is in progress` | Другая пишущая операция или демон держит `flock`; дождись завершения. Не удаляй файл `lock`: наличие файла не означает зависшую блокировку. В новой версии `keys` не требует этой блокировки |
 | `cannot pin an existing outbound` | Балансировщик пока не имеет действующего target; проверить исходный пул/Observatory |
 | `outbound file was changed outside` | Остался cron/другой updater/ручная правка; остановить конфликт, восстановить согласованное состояние |

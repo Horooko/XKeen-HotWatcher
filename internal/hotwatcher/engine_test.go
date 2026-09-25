@@ -16,6 +16,7 @@ type fakeRuntime struct {
 	adds, removes, probes              []string
 	failAdd, failProbe, failValidation bool
 	failList                           bool
+	failBalance                        bool
 	addFailAt                          int
 	latencies                          map[string]time.Duration
 	failedTags                         map[string]bool
@@ -35,6 +36,9 @@ func (f *fakeRuntime) List() (map[string]bool, error) {
 	return m, nil
 }
 func (f *fakeRuntime) Balance() (Balance, error) {
+	if f.failBalance {
+		return Balance{}, errors.New("RoutingService unavailable")
+	}
 	return Balance{Override: f.override, Selected: []string{f.initial}}, nil
 }
 func (f *fakeRuntime) Add(n Node) error {
@@ -124,7 +128,7 @@ func TestSyncUsesProbesVerifiedBeforeVPNRestart(t *testing.T) {
 		t.Fatalf("VPN-dependent probe repeated: %v", r.probes)
 	}
 }
-func TestSyncPreparedAppliesOnlyDirectlyVerifiedNodes(t *testing.T) {
+func TestSyncPreparedKeepsAllKeysButSelectsVerified(t *testing.T) {
 	e, r, raw := setupEngine(t)
 	if err := e.Sync(true); err != nil {
 		t.Fatal(err)
@@ -134,9 +138,9 @@ func TestSyncPreparedAppliesOnlyDirectlyVerifiedNodes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	prepared := Parsed{Nodes: parsed.Nodes[:2]}
+	prepared := parsed
 	e.VerifiedLatencies = map[string]time.Duration{}
-	for _, node := range prepared.Nodes {
+	for _, node := range prepared.Nodes[:2] {
 		e.VerifiedLatencies[node.Tag] = 20 * time.Millisecond
 	}
 	r.failProbe = true
@@ -144,11 +148,53 @@ func TestSyncPreparedAppliesOnlyDirectlyVerifiedNodes(t *testing.T) {
 		t.Fatal(err)
 	}
 	s, err := e.state()
-	if err != nil || len(s.Active) != 2 {
+	if err != nil || len(s.Active) != 3 {
 		t.Fatalf("state=%+v err=%v", s, err)
 	}
-	if _, exists := findNode(s.Active, parsed.Nodes[2].Tag); exists {
-		t.Fatal("unverified key was applied")
+	if _, exists := findNode(s.Active, parsed.Nodes[2].Tag); !exists {
+		t.Fatal("unverified key missing from the list")
+	}
+	if s.Selected == parsed.Nodes[2].Tag {
+		t.Fatal("unverified key was selected")
+	}
+}
+func TestSyncKeepsUnreachableNewKeyWithoutSelectingIt(t *testing.T) {
+	e, r, raw := setupEngine(t)
+	if err := e.Sync(true); err != nil {
+		t.Fatal(err)
+	}
+	*raw = uri(testUUID, "FI") + "\n" + uri("00000000-0000-4000-8000-000000000002", "DE")
+	parsed, err := Parse([]byte(*raw), e.C)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var failed string
+	for _, node := range parsed.Nodes {
+		if node.Name == "DE" {
+			failed = node.Tag
+		}
+	}
+	r.failedTags = map[string]bool{failed: true}
+	if err := e.Sync(false); err != nil {
+		t.Fatal(err)
+	}
+	s, err := e.state()
+	if err != nil || len(s.Active) != 2 || s.Selected == failed || e.UnreachableCount != 1 {
+		t.Fatalf("state=%+v unreachable=%d err=%v", s, e.UnreachableCount, err)
+	}
+}
+func TestWithLockWaitDoesNotEnterWhileAnotherOperationRuns(t *testing.T) {
+	e, _, _ := setupEngine(t)
+	called := false
+	err := WithLock(e.C, func() error {
+		busy := WithLockWait(e.C, 10*time.Millisecond, func() error { called = true; return nil })
+		if !errors.Is(busy, ErrBusy) {
+			t.Fatalf("expected busy lock, got %v", busy)
+		}
+		return nil
+	})
+	if err != nil || called {
+		t.Fatalf("lock overlap: err=%v called=%v", err, called)
 	}
 }
 func TestAdoptBacksUpAndDoesNotRemoveLegacy(t *testing.T) {

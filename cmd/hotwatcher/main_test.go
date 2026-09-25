@@ -76,6 +76,29 @@ func TestKeysOutputStartsWithActiveKey(t *testing.T) {
 		t.Fatal(lines)
 	}
 }
+func TestInventoryShowsFetchedButUnappliedKey(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := os.Stdout
+	os.Stdout = w
+	printKeyInventory(hw.KeyInventory{Keys: []hw.KeyInventoryEntry{
+		{FetchedKey: hw.FetchedKey{Name: "старый", Tag: "old"}, Selected: true, Applied: true},
+		{FetchedKey: hw.FetchedKey{Name: "новый", Tag: "new", Checked: true}, Latest: true},
+	}})
+	w.Close()
+	os.Stdout = old
+	b, err := io.ReadAll(r)
+	r.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(b)
+	if !strings.Contains(s, "новый [new] — не применён, не прошёл проверку без VPN") || !strings.Contains(s, "старый [old]") {
+		t.Fatal(s)
+	}
+}
 func testConfig(t *testing.T) string {
 	t.Helper()
 	d := t.TempDir()

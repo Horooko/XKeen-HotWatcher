@@ -16,9 +16,13 @@ running() {
  START=$(cat "$STARTFILE")
  NOW=$(awk '{print $22}' "/proc/$PID/stat" 2>/dev/null) || return 1
  [ "$START" = "$NOW" ] || return 1
- EXE=$(readlink "/proc/$PID/exe" 2>/dev/null) || return 1
+ same_daemon "$PID"
+}
+same_daemon() {
+ [ -d "/proc/$1" ] || return 1
+ EXE=$(readlink "/proc/$1/exe" 2>/dev/null) || return 1
  case "$EXE" in "$BIN"|"$BIN (deleted)") ;; *) return 1 ;; esac
- tr '\000' '\n' < "/proc/$PID/cmdline" | grep -q '^daemon$'
+ tr '\000' '\n' < "/proc/$1/cmdline" | grep -q '^daemon$'
 }
 start() {
  if [ -e /opt/var/lib/hotwatcher-updater/pending-update.json ] && [ -z "${HOTWATCHER_UPDATE_ID:-}" ]; then echo 'Pending software update requires recovery; start deferred.' >&2; return 1; fi
@@ -31,7 +35,15 @@ start() {
  if [ -r "$PIDFILE" ]; then
   PID=$(cat "$PIDFILE")
   case "$PID" in ''|*[!0-9]*) echo 'Unsafe PID file; start deferred.' >&2; return 1;; esac
-  if kill -0 "$PID" 2>/dev/null; then echo 'Existing PID has unverified identity; start deferred.' >&2; return 1; fi
+  if kill -0 "$PID" 2>/dev/null; then
+   if same_daemon "$PID"; then
+    awk '{print $22}' "/proc/$PID/stat" > "$STARTFILE"
+    echo "Hot Watcher already running: $PID (start marker repaired)."
+    return 0
+   fi
+   echo "Existing PID $PID has unverified identity; start deferred. Inspect /proc/$PID before changing PID files." >&2
+   return 1
+  fi
   rm -f "$PIDFILE" "$STARTFILE"
  fi
  mkdir -p /opt/var/run
