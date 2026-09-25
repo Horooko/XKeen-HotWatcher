@@ -25,6 +25,10 @@ func usage() {
 Основные команды:
   keys           Сразу показать все ключи последней загрузки и сохранённые ключи
   keys --check   Заново измерить доступность применённых ключей (может быть долго)
+  dns status     Показать DNS-настройку Xray и состояние автоматического выбора
+  dns test       Проверить задержку доверенных DNS-серверов с роутера
+  dns auto on    Включить автоматический выбор нескольких DNS в Xray
+  dns auto off   Восстановить прежнюю DNS-настройку Xray
   sync           Обновить ключи подписки при работающем VPN
   hard-sync      Остановить XKeen, скачать подписку напрямую, запустить XKeen и применить ключи
   check-key      Проверить активный ключ и при сбое выбрать рабочий
@@ -133,6 +137,9 @@ func run() error {
 		return err
 	}
 	engine := hw.New(c)
+	if command == "dns" {
+		return dnsCommand(c, engine, args[1:])
+	}
 	if command == "hard-sync" {
 		if len(args) != 1 {
 			return errors.New("hard-sync не принимает аргументы")
