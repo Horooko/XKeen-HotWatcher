@@ -131,3 +131,56 @@ func TestRealXrayHotAPIPreservesEstablishedTCP(t *testing.T) {
 	roundtrip("after-api-remove-old")
 	t.Logf("Real Xray API add/pin/remove completed; established TCP survived; production test PID=%d", cmd.Process.Pid)
 }
+
+// Verify that the existing main--VL selector sees the static copy on a cold
+// Xray start. No subscription credentials or production configuration are used.
+func TestRealXrayStaticAliasSurvivesRestart(t *testing.T) {
+	binary := os.Getenv("XRAY_INTEGRATION_BINARY")
+	if binary == "" {
+		t.Skip("real Xray binary not provided")
+	}
+	dir := t.TempDir()
+	apiPort := freePort(t)
+	cfg := filepath.Join(dir, "xray.json")
+	config := map[string]any{
+		"log":       map[string]any{"loglevel": "none"},
+		"api":       map[string]any{"tag": "api", "listen": fmt.Sprintf("127.0.0.1:%d", apiPort), "services": []string{"HandlerService", "RoutingService"}},
+		"outbounds": []any{map[string]any{"tag": staticAlias, "protocol": "freedom"}, map[string]any{"tag": "vless-reality", "protocol": "freedom"}},
+		"routing":   map[string]any{"balancers": []any{map[string]any{"tag": "proxy", "selector": []string{"main--VL"}, "strategy": map[string]any{"type": "random"}}}},
+	}
+	if err := os.WriteFile(cfg, encode(config), 0600); err != nil {
+		t.Fatal(err)
+	}
+	c := Defaults()
+	c.XrayBinary, c.APIAddress, c.AssetDir, c.StateDir = binary, fmt.Sprintf("127.0.0.1:%d", apiPort), dir, dir
+	x := Xray{c}
+	for round := 0; round < 2; round++ {
+		cmd := exec.Command(binary, "run", "-config", cfg)
+		cmd.Env = isolatedEnv()
+		cmd.Stdout, cmd.Stderr = io.Discard, io.Discard
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		ready := false
+		for i := 0; i < 50; i++ {
+			if tags, err := x.List(); err == nil && tags[staticAlias] {
+				ready = true
+				break
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		if !ready {
+			cmd.Process.Kill()
+			cmd.Wait()
+			t.Fatal("Xray did not load static alias")
+		}
+		balance, err := x.Balance()
+		if err != nil || len(balance.Selected) != 1 || balance.Selected[0] != staticAlias {
+			cmd.Process.Kill()
+			cmd.Wait()
+			t.Fatalf("static alias not selected by main--VL after start %d: %+v, %v", round, balance, err)
+		}
+		cmd.Process.Kill()
+		cmd.Wait()
+	}
+}

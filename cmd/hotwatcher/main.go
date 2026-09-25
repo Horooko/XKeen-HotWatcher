@@ -10,7 +10,9 @@ import (
 	hw "local/xkeen-hot-watcher/internal/hotwatcher"
 	"local/xkeen-hot-watcher/internal/updater"
 	"os"
+	"os/exec"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -18,29 +20,40 @@ import (
 func printJSON(v any) { b, _ := json.MarshalIndent(v, "", "  "); fmt.Println(string(b)) }
 func usage() {
 	fmt.Print(`XKeen Hot Watcher ` + hw.Version + `
-Usage: hotwatcher [--config /opt/etc/hotwatcher/config.json] COMMAND
+Использование: hotwatcher [--config ПУТЬ] КОМАНДА
 
-config-example   Print default configuration (no secrets)
-url set|migrate  Save URL in 07_hotwatcher_api.json; set reads standard input
-version [--json] Print version and release build info
-update COMMAND   Signed software update: check|status|download|apply|enable|disable|pause|pin|unpin|retry
-doctor           Read-only local/API capability checks
-plan             Download/parse subscription, report diff; no API/disk changes
-adopt            First migration: backup existing subscription file and hot-apply
-sync             Fetch/validate/probe/apply subscription without production restart
-status           Redacted state and API status
-nodes            Owned node tags (no credentials)
-keys             Active key first; fresh HTTPS latency and elapsed check/selection time
-select TAG       Explicitly pin one active node, after a candidate probe
-reconcile        Restore saved active pool and pin via API, without downloading
-hold on|off      Pause downloads/application/GC, but keep restoring saved pin
-gc               Remove only owned retired handlers after the grace period
-recover          Complete a journaled, interrupted transaction
-abort            Restore old selection and file from the pending transaction
-daemon           Subscription timer + runtime pin reconciliation; foreground
+Основные команды:
+  keys           Показать активный ключ и проверить задержку остальных
+  sync           Обновить ключи подписки при работающем VPN
+  hard-sync      Остановить XKeen, скачать подписку напрямую, запустить XKeen и применить ключи
+  check-key      Проверить активный ключ и при сбое выбрать рабочий
+  select ИМЯ    Выбрать ключ по точному имени или тегу из keys
+  status         Показать состояние службы и выбранный ключ
+  stop           Перейти на статический ключ и остановить службу подписки
+  start          Вернуться к ключам подписки и запустить службу
 
-This program never invokes xkeen, changes netfilter or restarts production Xray.
-It is not a kill-switch and cannot guarantee preservation of every game session.
+Подробности: hotwatcher help advanced
+`)
+}
+func advancedUsage() {
+	fmt.Print(`Дополнительные команды Hot Watcher:
+  doctor             Проверить настройки и доступность API без изменений
+  plan               Скачать подписку и показать план без применения
+  adopt              Первое подключение: сохранить старый файл и применить подписку
+  nodes              Показать теги управляемых узлов
+  hold on|off        Приостановить или возобновить автообновление
+  reconcile          Восстановить сохранённые узлы и выбор через API
+  gc                 Удалить старые узлы после периода ожидания
+  recover|abort      Завершить или откатить прерванное применение
+  url set|migrate    Сохранить URL (set читает его из стандартного ввода)
+  update КОМАНДА     Обновление программы: check|status|download|apply|rollback
+  config-example     Показать пример конфигурации без секретов
+  version [--json]   Показать версию
+  daemon             Запустить службу на переднем плане
+
+hard-sync временно прерывает VPN-соединения и перезапускает XKeen.
+При ошибке загрузки XKeen запускается обратно, старые ключи сохраняются.
+Команды stop/start переключают статический ключ, но не выключают XKeen.
 `)
 }
 func main() {
@@ -103,18 +116,37 @@ func run() error {
 		return nil
 	}
 	if command == "help" {
-		usage()
-		return nil
+		if len(args) == 1 {
+			usage()
+			return nil
+		}
+		if len(args) == 2 && args[1] == "advanced" {
+			advancedUsage()
+			return nil
+		}
+		return errors.New("использование: hotwatcher help [advanced]")
 	}
 	c, err := hw.LoadConfig(*path)
 	if err != nil {
 		return err
 	}
 	engine := hw.New(c)
+	if command == "hard-sync" {
+		if len(args) != 1 {
+			return errors.New("hard-sync не принимает аргументы")
+		}
+		return hardSync(c, engine)
+	}
+	if command == "stop" || command == "start" {
+		if len(args) != 1 {
+			return errors.New("start and stop take no arguments")
+		}
+		return serviceMode(c, engine, command)
+	}
 	if command == "daemon" {
 		return daemon(c, engine)
 	}
-	if command == "status" || command == "doctor" || command == "nodes" {
+	if command == "status" || command == "doctor" || command == "nodes" || command == "keys" {
 		var v any
 		var er error
 		switch command {
@@ -124,6 +156,13 @@ func run() error {
 			v, er = engine.Doctor()
 		case "nodes":
 			v, er = engine.Nodes()
+		case "keys":
+			var keys hw.KeysReport
+			keys, er = engine.Keys()
+			if er == nil {
+				printKeys(keys)
+			}
+			return er
 		}
 		if v != nil {
 			printJSON(v)
@@ -170,12 +209,6 @@ func run() error {
 				printJSON(v)
 			}
 			return er
-		case "keys":
-			v, er := engine.Keys()
-			if er == nil {
-				printKeys(v)
-			}
-			return er
 		case "adopt":
 			return engine.Sync(true)
 		case "sync":
@@ -185,10 +218,19 @@ func run() error {
 		case "reconcile":
 			return engine.Reconcile()
 		case "select":
-			if len(args) != 2 {
-				return errors.New("select requires a tag from nodes")
+			if len(args) < 2 {
+				return errors.New("select requires a tag or exact name from keys")
 			}
-			return engine.Select(args[1])
+			return engine.Select(strings.Join(args[1:], " "))
+		case "check-key":
+			if len(args) != 1 {
+				return errors.New("check-key takes no arguments")
+			}
+			selected, er := engine.CheckKey()
+			if er == nil {
+				fmt.Println("Verified selected key:", selected)
+			}
+			return er
 		case "gc":
 			return engine.GC()
 		case "recover":
@@ -211,6 +253,88 @@ func run() error {
 		fmt.Println("OK (production Xray was not restarted)")
 	}
 	return err
+}
+
+func enabledMarker() (bool, error) {
+	s, err := os.Lstat("/opt/etc/hotwatcher/enabled")
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if !s.Mode().IsRegular() {
+		return false, errors.New("unsafe service enabled marker")
+	}
+	return true, nil
+}
+
+func setEnabled(on bool) error {
+	if !on {
+		err := os.Remove("/opt/etc/hotwatcher/enabled")
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if exists, err := enabledMarker(); err != nil || exists {
+		return err
+	}
+	return os.WriteFile("/opt/etc/hotwatcher/enabled", []byte("enabled\n"), 0600)
+}
+
+func initService(action string) error {
+	out, err := exec.Command("/opt/etc/init.d/S99hotwatcher", action).CombinedOutput()
+	if len(out) > 0 {
+		fmt.Print(string(out))
+	}
+	if err != nil {
+		return fmt.Errorf("Hot Watcher service %s failed: %w", action, err)
+	}
+	return nil
+}
+
+func serviceMode(c hw.Config, engine *hw.Engine, action string) error {
+	if action == "start" {
+		if err := hw.WithLock(c, engine.StartFromStatic); err != nil {
+			return err
+		}
+		if err := setEnabled(true); err != nil {
+			return err
+		}
+		if err := initService("start"); err != nil {
+			return err
+		}
+		time.Sleep(time.Second)
+		status, err := exec.Command("/opt/etc/init.d/S99hotwatcher", "status").CombinedOutput()
+		if err != nil || !strings.Contains(string(status), "Hot Watcher PID:") {
+			return errors.New("subscription route restored, but Hot Watcher service did not remain running")
+		}
+		fmt.Println("Subscription service active. Xray was not restarted.")
+		return nil
+	}
+	wasEnabled, err := enabledMarker()
+	if err != nil {
+		return err
+	}
+	if err = setEnabled(false); err != nil {
+		return err
+	}
+	if err = initService("stop"); err != nil {
+		if wasEnabled {
+			_ = setEnabled(true)
+		}
+		return err
+	}
+	if err = hw.WithLock(c, engine.StopToStatic); err != nil {
+		if _, markerErr := os.Lstat(c.StateDir + "/static-mode.json"); os.IsNotExist(markerErr) && wasEnabled {
+			_ = setEnabled(true)
+			_ = initService("start")
+		}
+		return err
+	}
+	fmt.Println("Static fallback active from 04_outbounds.json. Xray was not restarted.")
+	return nil
 }
 
 func printKeys(v hw.KeysReport) {
@@ -268,6 +392,7 @@ func daemon(c hw.Config, e *hw.Engine) error {
 	defer cancel()
 	hw.SafeLog(c, "daemon_started", map[string]any{"interval_seconds": c.IntervalSeconds})
 	next := hw.NextSubscriptionCheck(c)
+	nextKeyCheck := time.Time{} // Check the saved pin once on service startup.
 	if id := os.Getenv("HOTWATCHER_UPDATE_ID"); id != "" {
 		if _, err := e.Status(); err != nil {
 			return err
@@ -297,7 +422,19 @@ func daemon(c hw.Config, e *hw.Engine) error {
 				hw.WriteNextSubscriptionCheck(c, next)
 				er := e.Sync(false)
 				hw.WriteLastCheck(c, er == nil)
+				if er != nil {
+					// Subscription download/validation may fail while the saved
+					// selected node is already dead. Check the saved pool anyway.
+					if _, keyErr := e.CheckKey(); keyErr != nil {
+						hw.SafeLog(c, "key_check_failed", map[string]any{"message": keyErr.Error()})
+					}
+				}
 				return er
+			}
+			if time.Now().After(nextKeyCheck) {
+				nextKeyCheck = time.Now().Add(time.Duration(c.KeyCheckSeconds) * time.Second)
+				_, keyErr := e.CheckKey()
+				return keyErr
 			}
 			return nil
 		})

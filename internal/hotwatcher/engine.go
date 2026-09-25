@@ -38,10 +38,25 @@ type Engine struct {
 	R       Runtime
 	Fetcher func(Config) ([]byte, error)
 	Now     func() time.Time
+	// VerifiedLatencies is used only by an explicit hard-sync operation. Its
+	// probes run while XKeen is stopped and must be discarded afterwards.
+	VerifiedLatencies map[string]time.Duration
 }
 
 func New(c Config) *Engine {
 	return &Engine{C: c, R: Xray{c}, Fetcher: Fetch, Now: func() time.Time { return time.Now().UTC() }}
+}
+func (e *Engine) probe(node Node) error {
+	if _, ok := e.VerifiedLatencies[node.Tag]; ok {
+		return nil
+	}
+	return e.R.Probe(node)
+}
+func (e *Engine) probeLatency(node Node) (time.Duration, error) {
+	if latency, ok := e.VerifiedLatencies[node.Tag]; ok {
+		return latency, nil
+	}
+	return e.R.ProbeLatency(node)
 }
 func (e *Engine) statePath() string   { return filepath.Join(e.C.StateDir, "state.json") }
 func (e *Engine) journalPath() string { return filepath.Join(e.C.StateDir, "pending.json") }
@@ -108,7 +123,16 @@ func (e *Engine) Plan() (map[string]any, error) {
 
 // Sync must run under the filesystem lock. All staged nodes pass an isolated
 // end-to-end HTTP probe before being added to the production process.
-func (e *Engine) Sync(adopt bool) error {
+func (e *Engine) Sync(adopt bool) error { return e.sync(adopt, nil) }
+
+// SyncPrepared applies an already downloaded and validated subscription. It is
+// used by hard-sync after the direct download and isolated probes finish.
+func (e *Engine) SyncPrepared(parsed Parsed) error { return e.sync(false, &parsed) }
+
+func (e *Engine) sync(adopt bool, prepared *Parsed) error {
+	if err := e.ensureSubscriptionMode(); err != nil {
+		return err
+	}
 	if e.held() {
 		e.event("held", nil)
 		return nil
@@ -133,13 +157,21 @@ func (e *Engine) Sync(adopt bool) error {
 	if er = checkSelector(e.C); er != nil {
 		return er
 	}
-	b, er := e.Fetcher(e.C)
-	if er != nil {
-		return er
-	}
-	parsed, er := Parse(b, e.C)
-	if er != nil {
-		return er
+	var parsed Parsed
+	if prepared == nil {
+		b, fetchErr := e.Fetcher(e.C)
+		if fetchErr != nil {
+			return fetchErr
+		}
+		parsed, er = Parse(b, e.C)
+		if er != nil {
+			return er
+		}
+	} else {
+		parsed = *prepared
+		if len(parsed.Nodes) == 0 || len(parsed.Nodes) > e.C.MaxNodes {
+			return errors.New("prepared subscription has no valid nodes")
+		}
 	}
 	nodes := parsed.Nodes
 	tags, er := e.R.List()
@@ -199,7 +231,7 @@ func (e *Engine) Sync(adopt bool) error {
 		for _, n := range nodes {
 			_, known := findNode(oldNodes, n.Tag)
 			if !known || !tags[n.Tag] {
-				if er = e.R.Probe(n); er != nil {
+				if er = e.probe(n); er != nil {
 					return fmt.Errorf("candidate %s failed health check; old configuration kept: %w", n.Tag, er)
 				}
 			}
@@ -264,7 +296,7 @@ func (e *Engine) fastest(nodes, oldNodes []Node, tags map[string]bool, fallback 
 	best := ""
 	bestLatency := time.Duration(0)
 	for _, n := range nodes {
-		latency, err := e.R.ProbeLatency(n)
+		latency, err := e.probeLatency(n)
 		if err != nil {
 			_, known := findNode(oldNodes, n.Tag)
 			if !known || !tags[n.Tag] {
@@ -430,6 +462,9 @@ func (e *Engine) Abort() error {
 	return nil
 }
 func (e *Engine) Reconcile() error {
+	if err := e.ensureSubscriptionMode(); err != nil {
+		return err
+	}
 	if e.pending() {
 		return errors.New("pending transaction requires recover or abort")
 	}
@@ -471,6 +506,9 @@ func (e *Engine) reconcile(s *State, tags map[string]bool) error {
 	return nil
 }
 func (e *Engine) GC() error {
+	if err := e.ensureSubscriptionMode(); err != nil {
+		return err
+	}
 	if e.held() {
 		return errors.New("hold enabled: no retired handlers will be removed")
 	}
@@ -530,11 +568,18 @@ func (e *Engine) gc(s *State) error {
 	return nil
 }
 func (e *Engine) Status() (map[string]any, error) {
+	mode, modeErr := e.staticMode()
+	if modeErr != nil {
+		return nil, modeErr
+	}
 	s, er := e.state()
 	if er != nil {
 		return nil, er
 	}
-	m := map[string]any{"version": Version, "adopted": s != nil, "hold": e.held(), "pending_transaction": e.pending(), "automatic_gc": e.C.AutoGC, "selection_policy": e.C.SelectionPolicy, "update_interval_seconds": e.C.IntervalSeconds, "hotwatcher_restarts_xray": false}
+	m := map[string]any{"version": Version, "adopted": s != nil, "hold": e.held(), "pending_transaction": e.pending(), "automatic_gc": e.C.AutoGC, "selection_policy": e.C.SelectionPolicy, "update_interval_seconds": e.C.IntervalSeconds, "hotwatcher_restarts_xray": false, "hard_sync_restarts_xray": true, "static_fallback_mode": mode != nil}
+	if mode != nil {
+		m["static_fallback_alias"] = staticAlias
+	}
 	if s != nil {
 		m["selected"] = s.Selected
 		m["active_nodes"] = len(s.Active)
@@ -706,8 +751,13 @@ type KeysReport struct {
 
 // Keys measures each owned outbound through a separate loopback-only Xray
 // process. It reads the production pin but never changes it or the schedule.
+// The CLI runs it without the subscription lock so a long daemon probe does
+// not block inspection; a concurrent pin change may require a retry.
 func (e *Engine) Keys() (KeysReport, error) {
 	report := KeysReport{}
+	if err := e.ensureSubscriptionMode(); err != nil {
+		return report, err
+	}
 	s, err := e.state()
 	if err != nil {
 		return report, err
@@ -775,7 +825,12 @@ func elapsed(now, then time.Time) (time.Duration, bool) {
 	}
 	return now.Sub(then), true
 }
-func (e *Engine) Select(tag string) error {
+
+// Select accepts either an owned tag or a unique, exact subscription name.
+func (e *Engine) Select(identifier string) error {
+	if err := e.ensureSubscriptionMode(); err != nil {
+		return err
+	}
 	if e.pending() {
 		return errors.New("pending transaction: selection refused")
 	}
@@ -786,16 +841,45 @@ func (e *Engine) Select(tag string) error {
 	if s == nil {
 		return errors.New("not adopted")
 	}
+	tag := identifier
 	node, ok := findNode(s.Active, tag)
 	if !ok {
-		return errors.New("requested tag is not in the active owned pool")
+		for _, candidate := range s.Active {
+			if candidate.Name != identifier {
+				continue
+			}
+			if ok {
+				return errors.New("node name is ambiguous; use the tag from keys")
+			}
+			node, tag, ok = candidate, candidate.Tag, true
+		}
+		if !ok {
+			return errors.New("requested tag or exact name is not in the active owned pool")
+		}
 	}
 	old, er := e.checkDisk(s)
 	if er != nil {
 		return er
 	}
-	if er = e.R.Probe(node); er != nil {
+	tags, er := e.R.List()
+	if er != nil {
 		return er
+	}
+	if !tags[tag] {
+		return errors.New("requested node is absent from the running Xray")
+	}
+	bal, er := e.R.Balance()
+	if er != nil {
+		return er
+	}
+	if bal.Override != s.Selected {
+		return errors.New("live selection differs from saved state; run reconcile before select")
+	}
+	if er = e.probe(node); er != nil {
+		return er
+	}
+	if tag == s.Selected {
+		return nil
 	}
 	next := *s
 	next.Selected = tag
@@ -812,6 +896,85 @@ func (e *Engine) Select(tag string) error {
 		return er
 	}
 	return e.commit(&t, false)
+}
+
+// CheckKey verifies the selected key independently of subscription downloads.
+// A failed selected key is replaced with the fastest freshly verified peer.
+func (e *Engine) CheckKey() (string, error) {
+	if err := e.ensureSubscriptionMode(); err != nil {
+		return "", err
+	}
+	if e.held() {
+		return "", errors.New("hold is enabled; key checking and switching paused")
+	}
+	if e.pending() {
+		return "", errors.New("pending transaction requires recover or abort before checking keys")
+	}
+	s, err := e.state()
+	if err != nil {
+		return "", err
+	}
+	if s == nil {
+		return "", errors.New("not adopted")
+	}
+	if _, err = e.checkDisk(s); err != nil {
+		return "", err
+	}
+	tags, err := e.R.List()
+	if err != nil {
+		return "", err
+	}
+	bal, err := e.R.Balance()
+	if err != nil {
+		return "", err
+	}
+	if bal.Override != s.Selected {
+		return "", errors.New("live selection differs from saved state; run reconcile before checking keys")
+	}
+	active, _ := findNode(s.Active, s.Selected)
+	if !tags[active.Tag] {
+		return "", errors.New("selected key is absent from the running Xray; run reconcile")
+	}
+	if _, err = e.R.ProbeLatency(active); err == nil {
+		return s.Selected, nil
+	}
+	// A single timeout should not dislodge a live game route.
+	if _, err = e.R.ProbeLatency(active); err == nil {
+		return s.Selected, nil
+	}
+	type measuredCandidate struct {
+		tag     string
+		latency time.Duration
+	}
+	var peers []measuredCandidate
+	for _, candidate := range s.Active {
+		if candidate.Tag == s.Selected || !tags[candidate.Tag] {
+			continue
+		}
+		latency, probeErr := e.R.ProbeLatency(candidate)
+		if probeErr == nil {
+			peers = append(peers, measuredCandidate{candidate.Tag, latency})
+		}
+	}
+	if len(peers) == 0 {
+		return "", errors.New("selected key failed HTTPS check; no verified replacement; old selection kept")
+	}
+	sort.Slice(peers, func(i, j int) bool {
+		if peers[i].latency == peers[j].latency {
+			return peers[i].tag < peers[j].tag
+		}
+		return peers[i].latency < peers[j].latency
+	})
+	for _, peer := range peers {
+		if err = e.Select(peer.tag); err == nil {
+			e.event("key_failover", map[string]any{"from": s.Selected, "to": peer.tag})
+			return peer.tag, nil
+		}
+		if e.pending() {
+			return "", err
+		}
+	}
+	return "", fmt.Errorf("verified peers failed final switch; old selection kept: %w", err)
 }
 func (e *Engine) Doctor() (map[string]any, error) {
 	result := map[string]any{"version": Version, "checks": map[string]bool{}, "secrets_printed": false}
