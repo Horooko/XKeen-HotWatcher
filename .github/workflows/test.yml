@@ -7,6 +7,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Archive tracked source for reproducible testing
+        run: git archive --format=tar HEAD -o "$RUNNER_TEMP/hotwatcher-source.tar"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hotwatcher-source
+          path: ${{ runner.temp }}/hotwatcher-source.tar
+          retention-days: 7
       - uses: actions/setup-go@v5
         with:
           go-version: stable
