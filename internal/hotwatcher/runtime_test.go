@@ -75,6 +75,9 @@ func fakeXrayProcess() int {
 	}
 	switch args[1] {
 	case "lso":
+		if os.Getenv("HW_STDERR_WARNING") == "1" {
+			fmt.Fprintln(os.Stderr, "warning: deprecated transport; private-diagnostic")
+		}
 		list := []map[string]any{}
 		for k := range db.Tags {
 			list = append(list, map[string]any{"tag": k})
@@ -202,5 +205,14 @@ func TestIsolatedProbeProcessSuccessAndFailure(t *testing.T) {
 	t.Setenv("HW_PROBE_CODE", "403")
 	if _, e = x.ProbeLatency(p.Nodes[0]); e == nil {
 		t.Fatal("403 accepted as healthy")
+	}
+}
+
+func TestListOutboundsIgnoresStderrWarnings(t *testing.T) {
+	x := fakeProcessRuntime(t)
+	t.Setenv("HW_STDERR_WARNING", "1")
+	tags, err := x.List()
+	if err != nil || !tags["base"] {
+		t.Fatalf("valid API JSON was rejected: %v, %v", tags, err)
 	}
 }

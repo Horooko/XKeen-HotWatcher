@@ -5,6 +5,8 @@
   let current = null;
   let sitesDirty = false;
   let activeJob = 0;
+  let refreshing = false;
+  let systemRefreshing = false;
   const pageTitles = { overview: "Обзор подключения", keys: "Управление ключами", "url-test": "Проверка сайтов", system: "XKeen и Xray", updates: "Обновления" };
 
   async function api(path, options = {}) {
@@ -59,7 +61,7 @@
     $("loginScreen").hidden = true;
     $("appScreen").hidden = false;
     navigate();
-    if (activePage() !== "system") refreshSystem();
+    refreshSystem();
   }
 
   function activePage() { const name = location.hash.slice(1); return pageTitles[name] ? name : "overview"; }
@@ -79,10 +81,22 @@
     if (content != null) el.textContent = content;
     return el;
   }
-  function renderKeys(inventory) {
+  // FetchedKey is embedded in KeyInventoryEntry. Its JSON fields are lowercase,
+  // while the inventory flags keep their Go names. Accept legacy clients too.
+  function inventoryKeys(inventory) {
     const keys = Array.isArray(inventory?.Keys) ? inventory.Keys : [];
+    return keys.filter((key) => key && typeof key === "object").map((key) => ({
+      ...key,
+      Tag: String(key.tag ?? key.Tag ?? ""),
+      Name: String(key.name ?? key.Name ?? ""),
+      Checked: key.checked ?? key.Checked ?? false,
+      Verified: key.verified ?? key.Verified ?? false
+    }));
+  }
+  function renderKeys(inventory) {
+    const keys = inventoryKeys(inventory);
     const body = $("keysBody");
-    body.replaceChildren();
+    const rows = document.createDocumentFragment();
     text("keyCount", keys.length + " КЛЮЧЕЙ");
     text("keysNote", inventory?.Note || "Из сохранённого состояния");
     const query = $("keySearch").value.trim().toLocaleLowerCase("ru-RU");
@@ -94,9 +108,9 @@
       const row = make("tr");
       const identity = make("td");
       const identityWrap = make("div", "key-name");
-      identityWrap.append(make("span", "key-avatar", name.slice(0, 1).toLocaleUpperCase("ru-RU")));
+      identityWrap.append(make("span", "key-avatar", Array.from(name)[0].toLocaleUpperCase("ru-RU")));
       const identityText = make("span");
-      identityText.append(make("strong", "", name + (key.Emergency ? " · Аварийный" : "")), make("small mono", key.Tag || "—"));
+      identityText.append(make("strong", "", name + (key.Emergency ? " · Аварийный" : "")), make("small", "mono", key.Tag || "—"));
       identityWrap.append(identityText); identity.append(identityWrap);
       const state = make("td");
       state.append(make("span", "pill " + (key.Selected ? "" : key.Applied ? "muted" : "warning"), key.Selected ? "Выбран" : key.Applied ? "Применён" : "Не применён"));
@@ -124,8 +138,9 @@
       }
       actions.append(group);
       row.append(identity, state, checked, actions);
-      body.append(row);
+      rows.append(row);
     }
+    body.replaceChildren(rows);
     $("keysEmpty").hidden = visible !== 0;
   }
 
@@ -199,17 +214,22 @@
     current = data;
     const status = data.status || {};
     const keys = data.keys || {};
-    const list = Array.isArray(keys.Keys) ? keys.Keys : [];
+    const list = inventoryKeys(keys);
     const selected = list.find((key) => key.Selected);
-    const online = !!status.api_reachable && !!status.balancer_api_reachable;
+    const checked = typeof status.api_reachable === "boolean" && typeof status.balancer_api_reachable === "boolean";
+    const online = status.api_reachable === true && status.balancer_api_reachable === true;
+    const system = data.system || {};
+    const processRunning = system.xray_running;
     text("versionLabel", "v" + (data.version || "—"));
-    text("topStatus", online ? "Xray: работает" : "Xray: нет связи");
-    $("topStatus").className = "top-status " + (online ? "online" : "offline");
-    badge($("connectionBadge"), online ? "Активно" : "Нет связи", online ? "good" : "bad");
+    const xrayLabel = online ? "API доступен" : processRunning === true ? "процесс запущен" : !checked ? "проверяю" : processRunning === false ? "процесс не найден" : "ошибка проверки API";
+    text("topStatus", "Xray: " + xrayLabel);
+    $("topStatus").className = "top-status" + (online ? " online" : checked && processRunning === false ? " offline" : "");
+    badge($("connectionBadge"), online ? "API доступен" : !checked ? "Проверяю" : "Управление недоступно", online ? "good" : "neutral");
+    if (data.system) renderSystem(system);
     text("selectedName", selected?.Name || (status.adopted ? "Ключ не найден" : "Не подключено"));
     text("selectedTag", selected?.Tag || status.selected || "—");
-    text("apiMetric", online ? "Работает" : "Нет связи");
-    text("apiDetail", online ? "API и балансировщик доступны" : "Проверьте XKeen и Xray");
+    text("apiMetric", online ? "Доступен" : checked ? "Ошибка проверки" : "Проверяю");
+    text("apiDetail", online ? "HandlerService и RoutingService доступны. Трафик проверяется через URL Test." : !checked ? "Идёт фоновая проверка API" : processRunning === true ? "Процесс Xray запущен, но API управления недоступен. Это не означает обрыв VPN." : "Проверьте локальный API и службы HandlerService / RoutingService. Состояние трафика не проверено.");
     text("keyMetric", String(status.active_nodes ?? list.filter((item) => item.Applied).length));
     text("testMetric", String((data.sites || []).length));
     text("testDetail", "Обязательных сайтов");
@@ -232,27 +252,41 @@
     renderKeys(keys);
     renderSites(data.sites || []);
     renderResults(data.last_test);
-    const warnings = Array.isArray(data.warnings) ? data.warnings : [];
+    const warnings = Array.isArray(data.warnings) ? [...data.warnings] : [];
+    if (status.api_error) warnings.push("HandlerService: " + status.api_error);
+    if (status.balancer_api_error) warnings.push("RoutingService: " + status.balancer_api_error);
     $("warningList").hidden = warnings.length === 0;
     text("warningList", warnings.join(" · "));
   }
 
   async function refresh() {
-    try { renderOverview(await api("/api/overview")); }
-    catch (error) { showBanner("Не удалось обновить панель", error.message, "failed"); }
+    if (refreshing) return;
+    refreshing = true;
+    try {
+      const data = await api("/api/overview");
+      if (csrf) renderOverview(data);
+    } catch (error) { showBanner("Не удалось обновить панель", error.message, "failed"); }
+    finally { refreshing = false; }
+  }
+  function renderSystem(state) {
+    const checked = !!state.checked_at && !state.checked_at.startsWith("0001");
+    const label = !checked ? "Проверяю" : !state.installed ? "Не найден" : state.command_ok ? "Статус получен" : "Установлен, ошибка команды статуса";
+    text("xkeenState", label);
+    text("xkeenTopStatus", "XKeen: " + (!checked ? "проверяю" : !state.installed ? "не найден" : state.command_ok ? "отвечает" : "установлен"));
+    $("xkeenTopStatus").className = "top-status" + (checked && state.command_ok ? " online" : checked && !state.installed ? " offline" : "");
+    text("xkeenChecked", checked ? "Проверено: " + dateLabel(state.checked_at) : "Проверка ещё не завершена");
+    text("xkeenStatusText", (state.status || []).join("\n") || "Статус пока недоступен");
+    text("xkeenLogText", (state.detached_log || []).join("\n") || "Записей пока нет");
+    text("xrayLogText", (state.xray_error_log || []).join("\n") || "Записей пока нет");
   }
   async function refreshSystem() {
+    if (systemRefreshing) return;
+    systemRefreshing = true;
     try {
       const state = await api("/api/system");
-      const label = !state.installed ? "Не найден" : state.command_ok ? "Статус получен" : "Ошибка команды";
-      text("xkeenState", label);
-      text("xkeenTopStatus", "XKeen: " + (state.command_ok ? "отвечает" : "нет статуса"));
-      $("xkeenTopStatus").className = "top-status " + (state.command_ok ? "online" : "offline");
-      text("xkeenChecked", "Проверено: " + dateLabel(state.checked_at));
-      text("xkeenStatusText", (state.status || []).join("\n") || "Статус пока недоступен");
-      text("xkeenLogText", (state.detached_log || []).join("\n") || "Записей пока нет");
-      text("xrayLogText", (state.xray_error_log || []).join("\n") || "Записей пока нет");
+      if (csrf) renderSystem(state);
     } catch (error) { showBanner("Статус XKeen", error.message, "failed"); }
+    finally { systemRefreshing = false; }
   }
   async function refreshUpdate() {
     try {
@@ -328,7 +362,7 @@
   $("syncButton").addEventListener("click", () => startAction("sync"));
   $("checkButton").addEventListener("click", () => startAction("check-key"));
   $("testSelectedButton").addEventListener("click", () => startAction("url-test"));
-  $("pinSelectedButton").addEventListener("click", () => { const key = current?.keys?.Keys?.find((item) => item.Selected); if (key) startAction("pin", key.Tag); });
+  $("pinSelectedButton").addEventListener("click", () => { const key = inventoryKeys(current?.keys).find((item) => item.Selected); if (key) startAction("pin", key.Tag); });
   $("autoButton").addEventListener("click", () => startAction("auto"));
   $("emergencyButton").addEventListener("click", startEmergency);
   $("forgetEmergencyButton").addEventListener("click", () => startAction("forget-emergency"));
@@ -355,5 +389,7 @@
       } else showLogin();
     } catch (error) { showLogin(error.message); }
   })();
-  setInterval(() => { if (csrf && !activeJob && !sitesDirty) { refresh(); if (activePage() === "system" || activePage() === "overview") refreshSystem(); if (activePage() === "updates") refreshUpdate(); } }, 30000);
+  // These endpoints read cached health. Editing sites or running a job must not
+  // freeze the global indicators; renderSites already preserves unsaved input.
+  setInterval(() => { if (csrf && !document.hidden) { refresh(); if (activePage() === "updates" && !activeJob) refreshUpdate(); } }, 5000);
 })();

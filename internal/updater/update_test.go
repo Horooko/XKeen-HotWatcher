@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"io"
+	hw "local/xkeen-hot-watcher/internal/hotwatcher"
 	"os"
 	"path/filepath"
 	"testing"
@@ -79,6 +80,10 @@ func TestGitHubReleasesDecoderAllowsExtraFieldsButRejectsUnsafeJSON(t *testing.T
 }
 
 func TestOfflineRepairRecordsBinaryAndPreservesHighWater(t *testing.T) {
+	// Exercise a fixed historical release independently of the current build.
+	oldVersion := hw.Version
+	hw.Version = "0.3.1"
+	defer func() { hw.Version = oldVersion }()
 	oldRoot, oldBinary, oldConfig := Root, Binary, ConfigPath
 	Root = t.TempDir()
 	if err := os.Chmod(Root, 0700); err != nil {
@@ -129,7 +134,7 @@ func TestWebUpdatePolicyPreservesMode(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, err := GetOverview()
-	if err != nil || got.Policy != "minor" || got.Mode != "auto" || !got.Enabled || got.Installed != "0.3.1" {
+	if err != nil || got.Policy != "minor" || got.Mode != "auto" || !got.Enabled || got.Installed != hw.Version {
 		t.Fatalf("unexpected updater overview: %+v %v", got, err)
 	}
 	if err := SetPolicy("major"); err == nil {

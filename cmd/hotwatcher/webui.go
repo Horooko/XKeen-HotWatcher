@@ -55,6 +55,7 @@ type webUI struct {
 	mu       sync.Mutex
 	sessions map[string]webSession
 	job      webJob
+	health   *dashboardHealth
 }
 
 func randomHex(bytes int) (string, error) {
@@ -169,7 +170,7 @@ func newWebUI(c hw.Config, e *hw.Engine) (*webUI, error) {
 	if c.WebUILANListen != "" {
 		hosts[c.WebUILANListen] = true
 	}
-	return &webUI{config: c, engine: e, token: token, hosts: hosts, sessions: map[string]webSession{}}, nil
+	return &webUI{config: c, engine: e, token: token, hosts: hosts, sessions: map[string]webSession{}, health: newDashboardHealth(c, e)}, nil
 }
 
 func (w *webUI) syncToken() bool {
@@ -318,7 +319,7 @@ func (w *webUI) handler() http.Handler {
 			apiError(out, 401, "требуется вход")
 			return
 		}
-		status, statusErr := w.engine.Status()
+		status, statusErr, system := w.health.snapshot()
 		keys, keysErr := w.engine.KeysSnapshot()
 		sites, sitesErr := w.engine.URLTestSites()
 		last, lastErr := w.engine.LastURLTest()
@@ -329,7 +330,7 @@ func (w *webUI) handler() http.Handler {
 				warnings = append(warnings, err.Error())
 			}
 		}
-		jsonResponse(out, 200, map[string]any{"version": hw.Version, "status": status, "keys": keys, "sites": sites, "last_test": last, "recovery": recovery, "warnings": warnings})
+		jsonResponse(out, 200, map[string]any{"version": hw.Version, "status": status, "system": system, "keys": keys, "sites": sites, "last_test": last, "recovery": recovery, "warnings": warnings})
 	})
 	mux.HandleFunc("GET /api/job", func(out http.ResponseWriter, r *http.Request) {
 		if _, ok := w.session(r); !ok {
@@ -346,7 +347,8 @@ func (w *webUI) handler() http.Handler {
 			apiError(out, 401, "требуется вход")
 			return
 		}
-		jsonResponse(out, 200, readXKeenStatus())
+		_, _, system := w.health.snapshot()
+		jsonResponse(out, 200, system)
 	})
 	mux.HandleFunc("GET /api/update", func(out http.ResponseWriter, r *http.Request) {
 		if _, ok := w.session(r); !ok {
@@ -477,6 +479,7 @@ func (w *webUI) handler() http.Handler {
 }
 
 func (w *webUI) runAction(id uint64, action, tag string) {
+	defer w.health.refresh()
 	var report *hw.URLTestReport
 	var err error
 	if action == "update-enable" {
@@ -536,6 +539,7 @@ func (w *webUI) runAction(id uint64, action, tag string) {
 }
 
 func (w *webUI) runEmergency(id uint64, uri string) {
+	defer w.health.refresh()
 	var result hw.EmergencyImportResult
 	err := hw.WithLockWait(w.config, 30*time.Second, func() error {
 		var importErr error
@@ -581,6 +585,8 @@ func startUpdateHelper() (*exec.Cmd, error) {
 }
 
 func serveWebUI(ctx context.Context, c hw.Config, e *hw.Engine) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	w, err := newWebUI(c, e)
 	if err != nil {
 		return err
@@ -604,6 +610,7 @@ func serveWebUI(ctx context.Context, c hw.Config, e *hw.Engine) error {
 	if len(listeners) == 0 {
 		return bindError
 	}
+	w.health.start(ctx, 30*time.Second)
 	servers := make([]*http.Server, 0, len(listeners))
 	finished := make(chan error, len(listeners))
 	for _, listener := range listeners {

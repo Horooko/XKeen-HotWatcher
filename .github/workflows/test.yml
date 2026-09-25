@@ -7,10 +7,26 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Archive tracked source for reproducible testing
+        run: git archive --format=tar HEAD -o "$RUNNER_TEMP/hotwatcher-source.tar"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hotwatcher-source
+          path: ${{ runner.temp }}/hotwatcher-source.tar
+          retention-days: 7
       - uses: actions/setup-go@v5
         with:
           go-version: stable
           cache: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node --test tests/webui.test.cjs
       - run: go test -race -cover ./...
       - run: go vet ./...
       - run: make build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hotwatcher-linux-builds
+          path: dist/
+          retention-days: 7

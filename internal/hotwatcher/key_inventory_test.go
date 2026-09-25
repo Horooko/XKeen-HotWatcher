@@ -1,6 +1,7 @@
 package hotwatcher
 
 import (
+	"encoding/json"
 	"os"
 	"strings"
 	"testing"
@@ -66,5 +67,37 @@ func TestFetchedInventoryRecordsDirectProbeResults(t *testing.T) {
 	}
 	if !strings.Contains(string(b), `"verified": true`) {
 		t.Fatal("direct probe result missing")
+	}
+}
+
+func TestInventoryJSONContractAndSnapshotSurviveAPIFailure(t *testing.T) {
+	e, r, _ := setupEngine(t)
+	if err := e.Sync(true); err != nil {
+		t.Fatal(err)
+	}
+	r.failList, r.failBalance = true, true
+	inventory, err := e.KeysSnapshot()
+	if err != nil || len(inventory.Keys) != 1 {
+		t.Fatalf("keys lost: %+v, %v", inventory, err)
+	}
+	data, err := json.Marshal(inventory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wire struct{ Keys []map[string]any }
+	if err := json.Unmarshal(data, &wire); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"tag", "name", "checked", "verified", "Selected", "Applied"} {
+		if _, ok := wire.Keys[0][key]; !ok {
+			t.Fatalf("wire field missing: %s", key)
+		}
+	}
+	status, err := e.Status()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status["api_reachable"] != false || status["balancer_api_reachable"] != false || status["api_error"] == nil || status["balancer_api_error"] == nil {
+		t.Fatalf("API failures were hidden: %v", status)
 	}
 }
