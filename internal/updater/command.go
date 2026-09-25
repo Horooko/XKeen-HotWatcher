@@ -34,6 +34,11 @@ func Command(args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), deadline)
 	defer cancel()
 	switch args[0] {
+	case "policy":
+		if len(args) != 2 {
+			return errors.New("использование: hotwatcher update policy patch|minor")
+		}
+		return SetPolicy(args[1])
 	case "repair-state":
 		if len(args) != 2 {
 			return errors.New("repair-state requires the package version")

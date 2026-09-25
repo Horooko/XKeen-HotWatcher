@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#101315">
+  <title>Hot Watcher — управление подключением</title>
+  <link rel="stylesheet" href="/assets/app.css">
+  <script src="/assets/app.js" defer></script>
+</head>
+<body>
+  <div id="loginScreen" class="login-screen">
+    <div class="login-mark" aria-hidden="true"><span></span><span></span><span></span></div>
+    <div class="login-card">
+      <div class="eyebrow">HOT WATCHER · WEB UI</div>
+      <h1>Сеть под<br><em>контролем.</em></h1>
+      <p class="login-intro">Маршрут, ключи, XKeen и обновления под вашим контролем.</p>
+      <form id="loginForm">
+        <label for="tokenInput">Токен доступа</label>
+        <input id="tokenInput" type="password" autocomplete="current-password" spellcheck="false" required placeholder="Вставьте токен">
+        <button type="submit" class="button primary full">Открыть панель <span aria-hidden="true">↗</span></button>
+      </form>
+      <p id="loginError" class="form-error" role="alert" hidden></p>
+      <p class="login-hint">Токен на роутере: <code>hotwatcher webui token</code></p>
+    </div>
+    <div class="login-foot">Приватная панель вашего роутера</div>
+  </div>
+
+  <div id="appScreen" class="app-shell" hidden>
+    <aside class="sidebar">
+      <a class="brand" href="#overview" aria-label="Hot Watcher — обзор">
+        <span class="brand-symbol" aria-hidden="true"><i></i><i></i><i></i></span>
+        <span>HOT<span>WATCHER</span><small>CONTROL PANEL</small></span>
+      </a>
+      <div class="nav-label">РАЗДЕЛЫ</div>
+      <nav aria-label="Разделы панели">
+        <a class="nav-link active" href="#overview"><span class="nav-icon" aria-hidden="true">◈</span> Обзор</a>
+        <a class="nav-link" href="#keys"><span class="nav-icon" aria-hidden="true">◇</span> Ключи</a>
+        <a class="nav-link" href="#url-test"><span class="nav-icon" aria-hidden="true">◎</span> URL Test</a>
+        <a class="nav-link" href="#system"><span class="nav-icon" aria-hidden="true">≋</span> Система</a>
+        <a class="nav-link" href="#updates"><span class="nav-icon" aria-hidden="true">↟</span> Обновления</a>
+      </nav>
+      <div class="sidebar-bottom">
+        <div class="sidebar-presence"><span class="pulse-dot"></span> Локальная панель</div>
+        <button id="logoutButton" class="text-button">Выйти <span aria-hidden="true">↗</span></button>
+      </div>
+    </aside>
+
+    <main class="content">
+      <header class="topbar">
+        <div class="mobile-brand">HOT<span>WATCHER</span></div>
+        <div id="pageCaption" class="topbar-caption">Обзор подключения</div>
+        <div class="topbar-right"><span id="xkeenTopStatus" class="top-status">XKeen: проверяю</span><span id="topStatus" class="top-status">Xray: проверяю</span><span id="versionLabel" class="version-pill">v—</span></div>
+      </header>
+
+      <div class="page-content">
+        <div id="operationBanner" class="operation-banner" role="status" aria-live="polite" hidden><span id="operationIcon" class="operation-icon">↻</span><div><strong id="operationTitle">Операция</strong><p id="operationMessage">Выполняется…</p></div><button id="dismissBanner" class="icon-button" aria-label="Скрыть уведомление">×</button></div>
+        <div id="page-overview" class="page" data-page="overview">
+        <section id="overview" class="section hero-section">
+          <div class="hero-copy">
+            <div class="eyebrow"><span class="eyebrow-line"></span> ОБЗОР СЕТИ</div>
+            <h1>Ваш маршрут.<br><em>Ваш выбор.</em></h1>
+            <p>Текущий ключ, доступность Xray и проверка нужных сайтов — без лишних действий и перезапусков.</p>
+            <div class="hero-actions">
+              <button id="syncButton" class="button primary">Синхронизировать ключи <span aria-hidden="true">↗</span></button>
+              <button id="checkButton" class="button secondary">Проверить ключ</button>
+            </div>
+          </div>
+          <div class="connection-card">
+            <div class="connection-top"><span>АКТИВНОЕ ПОДКЛЮЧЕНИЕ</span><span id="connectionBadge" class="status-badge neutral">Проверяю</span></div>
+            <div class="connection-orbit" aria-hidden="true"><span class="orbit o1"></span><span class="orbit o2"></span><span class="orbit-core">↗</span></div>
+            <div class="connection-info"><small>ВЫБРАННЫЙ КЛЮЧ</small><strong id="selectedName">Загрузка…</strong><span id="selectedTag" class="mono muted">—</span></div>
+          </div>
+        </section>
+
+        <section class="metrics" aria-label="Показатели">
+          <div class="metric"><div class="metric-head">Xray API <span aria-hidden="true">↗</span></div><strong id="apiMetric">—</strong><small id="apiDetail">Проверка соединения</small></div>
+          <div class="metric"><div class="metric-head">Ключи <span aria-hidden="true">◇</span></div><strong id="keyMetric">—</strong><small>Применены в текущем списке</small></div>
+          <div class="metric"><div class="metric-head">URL Test <span aria-hidden="true">◎</span></div><strong id="testMetric">—</strong><small id="testDetail">Обязательных сайтов</small></div>
+          <div class="metric"><div class="metric-head">Синхронизация <span aria-hidden="true">↻</span></div><strong id="syncMetric">—</strong><small id="syncDetail">Последняя проверка</small></div>
+        </section>
+        <div class="overview-links"><a href="#keys">Управлять ключами <span aria-hidden="true">↗</span></a><a href="#system">Состояние XKeen <span aria-hidden="true">↗</span></a><a href="#updates">Проверить обновления <span aria-hidden="true">↗</span></a></div>
+        </div>
+
+        <div id="page-keys" class="page" data-page="keys" hidden>
+        <section id="keys" class="section panel-section">
+          <div class="section-heading"><div><div class="eyebrow">01 / КЛЮЧИ</div><h2>Ваши подключения</h2><p>Быстрая смена ключа, закрепление выбранного и аварийный VLESS.</p></div><span id="keyCount" class="section-count">0 КЛЮЧЕЙ</span></div>
+          <div class="mode-card panel"><div><span class="eyebrow">РЕЖИМ ВЫБОРА</span><h3 id="modeTitle">Автоматический</h3><p id="modeDescription">Hot Watcher выбирает ключ по задержке и проверке сайтов.</p></div><div class="mode-actions"><button id="pinSelectedButton" class="button secondary compact">Закрепить текущий</button><button id="autoButton" class="button primary compact">Включить автовыбор</button></div></div>
+          <div class="table-card">
+            <div class="table-toolbar"><div><strong>Список ключей</strong><span id="keysNote">Из сохранённого состояния</span></div><input id="keySearch" class="search-input" type="search" placeholder="Найти ключ…" aria-label="Поиск ключа"></div>
+            <div class="table-scroll"><table><thead><tr><th>КЛЮЧ</th><th>СОСТОЯНИЕ</th><th>ПРОВЕРКА КЛЮЧА</th><th class="actions-col">ДЕЙСТВИЯ</th></tr></thead><tbody id="keysBody"></tbody></table></div>
+            <div id="keysEmpty" class="empty-state" hidden>Подходящих ключей пока нет.</div>
+          </div>
+          <div class="panel emergency-panel"><div class="panel-head"><div><strong>Аварийный ключ</strong><span id="emergencyCurrent">Не добавлен</span></div><span class="status-badge neutral">РУЧНОЙ РЕЖИМ</span></div><p>Вставьте один полный VLESS URI. Hot Watcher проверит конфигурацию Xray, добавит ключ и закрепит его. Аварийное применение возможно даже при ошибке URL Test.</p><label for="emergencyInput">VLESS URI</label><textarea id="emergencyInput" rows="3" spellcheck="false" autocomplete="off" placeholder="vless://…"></textarea><div class="emergency-actions"><button id="emergencyButton" class="button primary compact">Применить аварийный ключ</button><button id="forgetEmergencyButton" class="text-button">Убрать пометку аварийного</button></div><small>URI не сохраняется в браузере. В состоянии Hot Watcher хранится только разобранная конфигурация ключа.</small></div>
+        </section>
+        </div>
+
+        <div id="page-url-test" class="page" data-page="url-test" hidden>
+        <section id="url-test" class="section panel-section">
+          <div class="section-heading"><div><div class="eyebrow">02 / ПРОВЕРКА САЙТОВ</div><h2>URL Test</h2><p>Перед сменой ключа Hot Watcher открывает каждый сайт из этого списка через временный Xray.</p></div><button id="testSelectedButton" class="button secondary">Проверить выбранный ключ <span aria-hidden="true">↗</span></button></div>
+          <div class="url-grid">
+            <div class="panel site-panel">
+              <div class="panel-head"><div><strong>Обязательные сайты</strong><span>Изменения действуют сразу после сохранения</span></div><span id="siteCount" class="mini-count">0 / 12</span></div>
+              <div id="siteRows" class="site-rows"></div>
+              <div class="site-actions"><button id="addSiteButton" class="text-button add-site">＋ Добавить сайт</button><button id="saveSitesButton" class="button primary compact">Сохранить список</button></div>
+              <p class="site-footnote">От 1 до 12 публичных HTTPS-доменов. Сайт должен вернуть успешный HTTP-ответ.</p>
+            </div>
+            <div class="panel result-panel"><div class="panel-head"><div><strong>Последняя проверка</strong><span id="resultTime">Результата ещё нет</span></div><span id="resultBadge" class="status-badge neutral">—</span></div><div id="resultList" class="result-list"><div class="result-placeholder">Запустите URL Test, чтобы увидеть результат по каждому сайту.</div></div></div>
+          </div>
+        </section>
+        </div>
+
+        <div id="page-system" class="page" data-page="system" hidden>
+        <section id="system" class="section system-section">
+          <div class="section-heading"><div><div class="eyebrow">03 / СИСТЕМА</div><h2>XKeen и Xray</h2><p>Статус службы, последние события и восстановление.</p></div><button id="refreshSystemButton" class="button secondary compact">Обновить статус</button></div>
+          <div class="system-grid"><div class="system-card"><span>XKEEN</span><strong id="xkeenState">Проверяю…</strong><p id="xkeenChecked">Команда xkeen -status</p></div><div class="system-card"><span>КОНФИГУРАЦИЯ</span><strong id="configState">—</strong><p id="configDetail">Сверка файлов</p></div><div class="system-card"><span>ВОССТАНОВЛЕНИЕ</span><strong id="recoveryState">—</strong><p id="recoveryDetail">Проверка журнала</p></div></div>
+          <div class="log-grid"><div class="panel log-panel"><div class="panel-head"><div><strong>Статус XKeen</strong><span>Вывод xkeen -status</span></div></div><pre id="xkeenStatusText">Загрузка…</pre></div><div class="panel log-panel"><div class="panel-head"><div><strong>Журнал XKeen</strong><span>Последние строки фонового запуска</span></div></div><pre id="xkeenLogText">Загрузка…</pre></div><div class="panel log-panel"><div class="panel-head"><div><strong>Ошибки Xray</strong><span>Последние строки error.log</span></div></div><pre id="xrayLogText">Загрузка…</pre></div></div>
+          <div class="panel system-hint"><strong>Синхронизация без VPN</strong><p>Если VPN мешает загрузке подписки, выполните <code>hotwatcher hard-sync</code> в терминале роутера. Команда временно останавливает XKeen и восстанавливает его после загрузки.</p></div>
+          <div id="warningList" class="warning-list" hidden></div>
+        </section>
+        </div>
+
+        <div id="page-updates" class="page" data-page="updates" hidden>
+        <section id="updates" class="section panel-section">
+          <div class="section-heading"><div><div class="eyebrow">04 / ОБНОВЛЕНИЯ</div><h2>Версия и обновления</h2><p>Проверка подписанных релизов и установка с автоматическим откатом при ошибке.</p></div></div>
+          <div class="update-grid"><div class="panel update-card"><span class="eyebrow">УСТАНОВЛЕНА</span><strong id="installedVersion">—</strong><small id="updateMode">Режим обновлений</small></div><div class="panel update-card"><span class="eyebrow">ДОСТУПНА</span><strong id="availableVersion">—</strong><small id="lastUpdateCheck">Проверка ещё не выполнялась</small></div><div class="panel update-card"><span class="eyebrow">РЕЗУЛЬТАТ</span><strong id="updateResult">—</strong><small id="updatePhase">Нет текущей установки</small></div></div>
+		  <div class="panel update-controls"><div><strong>Разрешённые версии</strong><p>Для перехода с 0.2.x на 0.3.0 выберите «Исправления и новые функции».</p><select id="updatePolicy" aria-label="Политика обновлений"><option value="patch">Только исправления</option><option value="minor">Исправления и новые функции</option></select><button id="savePolicyButton" class="button secondary compact">Сохранить</button></div><div class="update-actions"><button id="enableUpdateButton" class="button secondary" hidden>Включить обновления</button><button id="checkUpdateButton" class="button secondary">Проверить обновления</button><button id="installUpdateButton" class="button primary">Установить обновление</button></div></div>
+          <p class="update-footnote">Установщик проверяет подпись и хеш релиза. Во время установки служба Hot Watcher и панель могут кратко перезапуститься; XKeen и рабочий Xray продолжают работать.</p>
+        </section>
+        </div>
+        <footer class="footer"><span>HOT WATCHER · ВАША СЕТЬ ПОД КОНТРОЛЕМ</span><span>Работает локально · Без внешних ресурсов</span></footer>
+      </div>
+    </main>
+  </div>
+</body>
+</html>

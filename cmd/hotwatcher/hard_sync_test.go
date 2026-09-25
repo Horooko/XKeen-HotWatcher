@@ -28,6 +28,13 @@ func (readyRuntime) Override(string) error                       { return nil }
 func (readyRuntime) Validate([]hw.Node, string) error            { return nil }
 func (readyRuntime) Probe(hw.Node) error                         { return nil }
 func (readyRuntime) ProbeLatency(hw.Node) (time.Duration, error) { return 0, nil }
+func (readyRuntime) URLTest(n hw.Node, sites []string) (hw.URLTestReport, error) {
+	report := hw.URLTestReport{Tag: n.Tag, Passed: true}
+	for _, site := range sites {
+		report.Results = append(report.Results, hw.URLTestResult{Site: site, OK: true})
+	}
+	return report, nil
+}
 
 func TestWaitXrayReadyChecksBalancerAsWellAsList(t *testing.T) {
 	for _, test := range []struct {

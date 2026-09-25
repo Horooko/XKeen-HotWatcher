@@ -22,6 +22,8 @@ type fakeRuntime struct {
 	failedTags                         map[string]bool
 	probeFailsOn                       map[string]int
 	probeCounts                        map[string]int
+	urlFailures                        map[string]bool
+	urlTests                           []string
 	afterOverride                      func(string)
 }
 
@@ -90,6 +92,14 @@ func (f *fakeRuntime) ProbeLatency(n Node) (time.Duration, error) {
 		return f.latencies[n.Tag], nil
 	}
 	return time.Millisecond, nil
+}
+func (f *fakeRuntime) URLTest(n Node, sites []string) (URLTestReport, error) {
+	f.urlTests = append(f.urlTests, n.Tag)
+	report := URLTestReport{Tag: n.Tag, Passed: !f.urlFailures[n.Tag]}
+	for _, site := range sites {
+		report.Results = append(report.Results, URLTestResult{Site: site, OK: !f.urlFailures[n.Tag]})
+	}
+	return report, nil
 }
 func setupEngine(t *testing.T) (*Engine, *fakeRuntime, *string) {
 	t.Helper()

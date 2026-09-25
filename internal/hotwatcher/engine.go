@@ -17,13 +17,14 @@ type Retired struct {
 	After time.Time `json:"remove_after"`
 }
 type State struct {
-	Schema     int       `json:"schema"`
-	Selected   string    `json:"selected"`
-	SelectedAt time.Time `json:"selected_at,omitempty"`
-	Active     []Node    `json:"active"`
-	Retired    []Retired `json:"retired"`
-	DiskHash   string    `json:"disk_hash"`
-	UpdatedAt  time.Time `json:"updated_at"`
+	Schema        int       `json:"schema"`
+	Selected      string    `json:"selected"`
+	SelectionMode string    `json:"selection_mode,omitempty"`
+	SelectedAt    time.Time `json:"selected_at,omitempty"`
+	Active        []Node    `json:"active"`
+	Retired       []Retired `json:"retired"`
+	DiskHash      string    `json:"disk_hash"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 type Transaction struct {
 	Schema         int       `json:"schema"`
@@ -77,7 +78,7 @@ func (e *Engine) state() (*State, error) {
 	if err != nil {
 		return nil, err
 	}
-	if s.Schema != 1 || len(s.Active) == 0 || s.Selected == "" {
+	if s.Schema != 1 || len(s.Active) == 0 || s.Selected == "" || (s.SelectionMode != "" && s.SelectionMode != "manual") {
 		return nil, errors.New("invalid state schema or empty active pool")
 	}
 	for _, n := range s.Active {
@@ -187,7 +188,25 @@ func (e *Engine) sync(adopt bool, prepared *Parsed) error {
 			e.event("fetched_inventory_write_failed", map[string]any{"message": cacheErr.Error()})
 		}
 	}
-	nodes := parsed.Nodes
+	nodes := append([]Node(nil), parsed.Nodes...)
+	if s != nil {
+		for _, old := range s.Active {
+			if !old.Emergency && (s.SelectionMode != "manual" || old.Tag != s.Selected) {
+				continue
+			}
+			if index := nodeIndex(nodes, old.Tag); index >= 0 {
+				if old.Emergency {
+					nodes[index].Emergency = true
+				}
+			} else {
+				nodes = append(nodes, old)
+			}
+		}
+	}
+	if len(nodes) > e.C.MaxNodes {
+		return errors.New("слишком много ключей с учётом закреплённого и аварийного; старый список сохранён")
+	}
+	sort.Slice(nodes, func(i, j int) bool { return nodes[i].Tag < nodes[j].Tag })
 	tags, er := e.R.List()
 	if er != nil {
 		return er
@@ -200,13 +219,21 @@ func (e *Engine) sync(adopt bool, prepared *Parsed) error {
 		if er = e.reconcile(s, tags); er != nil {
 			return er
 		}
-		if e.C.SelectionPolicy == "latency" || e.VerifiedLatencies != nil {
+		if s.SelectionMode != "manual" && (e.C.SelectionPolicy == "latency" || e.VerifiedLatencies != nil) {
 			selected, probeErr := e.fastest(nodes, s.Selected, s.SelectedAt)
 			if probeErr != nil {
 				return probeErr
 			}
 			if selected != s.Selected {
 				return e.Select(selected)
+			}
+		} else if s.SelectionMode != "manual" {
+			node, ok := findNode(nodes, s.Selected)
+			if !ok {
+				return errors.New("выбранный ключ отсутствует")
+			}
+			if _, er = e.urlTestNode(node); er != nil {
+				return er
 			}
 		}
 		e.event("unchanged", map[string]any{"active_nodes": len(s.Active), "ignored_non_vless": parsed.Skipped})
@@ -236,7 +263,9 @@ func (e *Engine) sync(adopt bool, prepared *Parsed) error {
 		previousIdentity = legacyIdentity(oldFile, oldTarget)
 	}
 	selected := choose(nodes, oldTarget, previousIdentity, e.C.PreferredName)
-	if e.C.SelectionPolicy == "latency" || e.VerifiedLatencies != nil {
+	if s != nil && s.SelectionMode == "manual" {
+		selected = s.Selected
+	} else if e.C.SelectionPolicy == "latency" || e.VerifiedLatencies != nil {
 		selectedAt := time.Time{}
 		if s != nil && selected == s.Selected {
 			selectedAt = s.SelectedAt
@@ -252,6 +281,11 @@ func (e *Engine) sync(adopt bool, prepared *Parsed) error {
 				if er = e.probe(n); er != nil {
 					return fmt.Errorf("candidate %s failed health check; old configuration kept: %w", n.Tag, er)
 				}
+			}
+		}
+		if node, ok := findNode(nodes, selected); ok {
+			if _, er = e.urlTestNode(node); er != nil {
+				return er
 			}
 		}
 	}
@@ -275,6 +309,9 @@ func (e *Engine) sync(adopt bool, prepared *Parsed) error {
 		return errors.New("retired pool limit reached; run gc outside a game session before another update")
 	}
 	next := State{Schema: 1, Active: nodes, Retired: retired, Selected: selected, UpdatedAt: e.Now()}
+	if s != nil {
+		next.SelectionMode = s.SelectionMode
+	}
 	if s == nil || s.Selected != selected {
 		next.SelectedAt = next.UpdatedAt
 	} else {
@@ -315,6 +352,11 @@ func (e *Engine) fastest(nodes []Node, fallback string, selectedAt time.Time) (s
 	bestLatency := time.Duration(0)
 	currentLatency := time.Duration(0)
 	currentVerified := false
+	type measured struct {
+		node    Node
+		latency time.Duration
+	}
+	var candidates []measured
 	for _, n := range nodes {
 		latency, err := e.probeLatency(n)
 		if err != nil {
@@ -324,6 +366,7 @@ func (e *Engine) fastest(nodes []Node, fallback string, selectedAt time.Time) (s
 		if best == "" || latency < bestLatency || (latency == bestLatency && n.Tag == fallback) {
 			best, bestLatency = n.Tag, latency
 		}
+		candidates = append(candidates, measured{n, latency})
 		if n.Tag == fallback {
 			currentLatency, currentVerified = latency, true
 		}
@@ -331,9 +374,10 @@ func (e *Engine) fastest(nodes []Node, fallback string, selectedAt time.Time) (s
 	if best == "" {
 		return "", errors.New("all active nodes failed HTTPS latency probes; old selection kept")
 	}
+	preferred := best
 	if best != fallback && currentVerified {
 		if age, ok := elapsed(e.Now(), selectedAt); ok && age < time.Duration(e.C.KeySwitchCooldownSeconds)*time.Second {
-			return fallback, nil
+			preferred = fallback
 		}
 		gain := currentLatency - bestLatency
 		minimum := time.Duration(e.C.KeySwitchMinImprovementMS) * time.Millisecond
@@ -342,10 +386,38 @@ func (e *Engine) fastest(nodes []Node, fallback string, selectedAt time.Time) (s
 			minimum = percentage
 		}
 		if gain < minimum {
-			return fallback, nil
+			preferred = fallback
 		}
 	}
-	return best, nil
+	if _, err := e.URLTestSites(); err != nil {
+		return "", err
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].latency == candidates[j].latency {
+			return candidates[i].node.Tag < candidates[j].node.Tag
+		}
+		return candidates[i].latency < candidates[j].latency
+	})
+	for _, candidate := range candidates {
+		if candidate.node.Tag != preferred {
+			continue
+		}
+		if _, err := e.urlTestNode(candidate.node); err == nil {
+			return preferred, nil
+		}
+		e.UnreachableCount++
+		break
+	}
+	for _, candidate := range candidates {
+		if candidate.node.Tag == preferred {
+			continue
+		}
+		if _, err := e.urlTestNode(candidate.node); err == nil {
+			return candidate.node.Tag, nil
+		}
+		e.UnreachableCount++
+	}
+	return "", errors.New("URL Test: ни один ключ не открыл все обязательные сайты; старый выбор сохранён")
 }
 func (e *Engine) setVerified(tag string) error {
 	if er := e.R.Override(tag); er != nil {
@@ -369,6 +441,9 @@ func (e *Engine) commit(t *Transaction, reprobe bool) error {
 		n, _ := findNode(t.Next.Active, t.Next.Selected)
 		if er = e.R.Probe(n); er != nil {
 			return fmt.Errorf("pending selected node failed re-probe: %w", er)
+		}
+		if _, er = e.urlTestNode(n); er != nil {
+			return fmt.Errorf("pending selected node failed URL Test: %w", er)
 		}
 	}
 	for _, n := range t.Next.Active {
@@ -428,7 +503,7 @@ func (e *Engine) Recover() error {
 	return e.commit(&t, true)
 }
 func validateTransaction(t Transaction) error {
-	if t.Schema != 1 || len(t.Next.Active) == 0 || t.Next.Selected == "" || t.Next.DiskHash != digest(configBytes(t.Next.Active, t.Next.Selected)) {
+	if t.Schema != 1 || len(t.Next.Active) == 0 || t.Next.Selected == "" || (t.Next.SelectionMode != "" && t.Next.SelectionMode != "manual") || t.Next.DiskHash != digest(configBytes(t.Next.Active, t.Next.Selected)) {
 		return errors.New("invalid transaction journal")
 	}
 	if _, ok := findNode(t.Next.Active, t.Next.Selected); !ok {
@@ -610,11 +685,14 @@ func (e *Engine) Status() (map[string]any, error) {
 	if er != nil {
 		return nil, er
 	}
-	m := map[string]any{"version": Version, "adopted": s != nil, "hold": e.held(), "pending_transaction": e.pending(), "automatic_gc": e.C.AutoGC, "selection_policy": e.C.SelectionPolicy, "key_switch_min_improvement_ms": e.C.KeySwitchMinImprovementMS, "key_switch_min_improvement_percent": e.C.KeySwitchMinImprovementPercent, "key_switch_cooldown_seconds": e.C.KeySwitchCooldownSeconds, "update_interval_seconds": e.C.IntervalSeconds, "hotwatcher_restarts_xray": false, "hard_sync_restarts_xray": true, "static_fallback_mode": mode != nil}
+	m := map[string]any{"version": Version, "adopted": s != nil, "hold": e.held(), "pending_transaction": e.pending(), "automatic_gc": e.C.AutoGC, "selection_policy": e.C.SelectionPolicy, "selection_mode": "auto", "key_switch_min_improvement_ms": e.C.KeySwitchMinImprovementMS, "key_switch_min_improvement_percent": e.C.KeySwitchMinImprovementPercent, "key_switch_cooldown_seconds": e.C.KeySwitchCooldownSeconds, "update_interval_seconds": e.C.IntervalSeconds, "hotwatcher_restarts_xray": false, "hard_sync_restarts_xray": true, "static_fallback_mode": mode != nil}
 	if mode != nil {
 		m["static_fallback_alias"] = staticAlias
 	}
 	if s != nil {
+		if s.SelectionMode == "manual" {
+			m["selection_mode"] = "manual"
+		}
 		m["selected"] = s.Selected
 		m["active_nodes"] = len(s.Active)
 		m["retired_nodes"] = len(s.Retired)
@@ -862,7 +940,10 @@ func elapsed(now, then time.Time) (time.Duration, bool) {
 }
 
 // Select accepts either an owned tag or a unique, exact subscription name.
-func (e *Engine) Select(identifier string) error {
+func (e *Engine) Select(identifier string) error { return e.selectNode(identifier, false) }
+func (e *Engine) Pin(identifier string) error    { return e.selectNode(identifier, true) }
+
+func (e *Engine) selectNode(identifier string, pin bool) error {
 	if err := e.ensureSubscriptionMode(); err != nil {
 		return err
 	}
@@ -910,14 +991,22 @@ func (e *Engine) Select(identifier string) error {
 	if bal.Override != s.Selected {
 		return errors.New("live selection differs from saved state; run reconcile before select")
 	}
-	if er = e.probe(node); er != nil {
-		return er
+	if !pin {
+		if er = e.probe(node); er != nil {
+			return er
+		}
+		if _, er = e.urlTestNode(node); er != nil {
+			return er
+		}
 	}
-	if tag == s.Selected {
+	if tag == s.Selected && (!pin || s.SelectionMode == "manual") {
 		return nil
 	}
 	next := *s
 	next.Selected = tag
+	if pin {
+		next.SelectionMode = "manual"
+	}
 	next.UpdatedAt = e.Now()
 	if tag != s.Selected {
 		next.SelectedAt = next.UpdatedAt
@@ -970,12 +1059,26 @@ func (e *Engine) CheckKey() (string, error) {
 	if !tags[active.Tag] {
 		return "", errors.New("selected key is absent from the running Xray; run reconcile")
 	}
-	if _, err = e.R.ProbeLatency(active); err == nil {
+	if s.SelectionMode == "manual" {
+		if _, probeErr := e.R.ProbeLatency(active); probeErr != nil {
+			return s.Selected, errors.New("закреплённый ключ не отвечает; автоматическая смена выключена")
+		}
+		if _, urlErr := e.urlTestNode(active); urlErr != nil {
+			return s.Selected, errors.New("закреплённый ключ не открыл обязательные сайты; автоматическая смена выключена")
+		}
 		return s.Selected, nil
 	}
-	// A single timeout should not dislodge a live game route.
 	if _, err = e.R.ProbeLatency(active); err == nil {
-		return s.Selected, nil
+		if _, urlErr := e.urlTestNode(active); urlErr == nil {
+			return s.Selected, nil
+		}
+	} else {
+		// A single timeout should not dislodge a live game route.
+		if _, err = e.R.ProbeLatency(active); err == nil {
+			if _, urlErr := e.urlTestNode(active); urlErr == nil {
+				return s.Selected, nil
+			}
+		}
 	}
 	type measuredCandidate struct {
 		tag     string

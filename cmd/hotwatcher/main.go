@@ -23,24 +23,18 @@ func usage() {
 Использование: hotwatcher [--config ПУТЬ] КОМАНДА
 
 Основные команды:
+  adopt          Первое подключение: сохранить старую конфигурацию и применить ключи
   keys           Сразу показать все ключи последней загрузки и сохранённые ключи
-  keys --check   Заново измерить доступность применённых ключей (может быть долго)
-  dns status     Показать DNS-настройку Xray и состояние автоматического выбора
-  dns test       Проверить задержку доверенных DNS-серверов с роутера
-  dns verify     Проверить DNS в отдельном Xray напрямую и через выбранный ключ
-  dns auto on    Включить автоматический выбор нескольких DNS в Xray
-  dns auto off   Восстановить прежнюю DNS-настройку Xray
+  url-test [ТЕГ] Проверить все обязательные сайты через выбранный или указанный ключ
   sync           Обновить ключи подписки при работающем VPN
   hard-sync      Остановить XKeen, скачать подписку напрямую, запустить XKeen и применить ключи
-  recovery status Показать этап прерванного hard-sync и причину занятой блокировки
-  recovery resume Восстановить XKeen и продолжить прерванное применение
-  recovery abort  Восстановить XKeen и отменить прерванное применение
   check-key      Проверить активный ключ и при сбое выбрать рабочий
   select ИМЯ    Выбрать ключ по точному имени или тегу из keys
+  pin ИМЯ       Закрепить ключ и запретить автоматическую смену
+  auto          Снять закрепление и выбрать лучший доступный ключ
+  emergency     Прочитать один VLESS URI из ввода и аварийно применить его
   status         Показать состояние службы и выбранный ключ
-  doctor network Проверить подписку, ключ, API и DNS по этапам
-  stop           Перейти на статический ключ и остановить службу подписки
-  start          Вернуться к ключам подписки и запустить службу
+  webui token    Показать токен входа в Web UI
   update         Проверить и установить доступное обновление программы
 
 Подробности: hotwatcher help advanced
@@ -49,18 +43,29 @@ func usage() {
 func advancedUsage() {
 	fmt.Print(`Дополнительные команды Hot Watcher:
   doctor             Проверить настройки и доступность API без изменений
+  doctor network     Проверить подписку, ключ, API и DNS по этапам
   plan               Скачать подписку и показать план без применения
-  adopt              Первое подключение: сохранить старый файл и применить подписку
   nodes              Показать теги управляемых узлов
+  keys --check       Заново измерить доступность применённых ключей
+  dns status         Показать DNS-настройку Xray и автоматический выбор
+  dns test           Проверить задержку доверенных DNS-серверов
+  dns verify         Проверить DNS напрямую и через выбранный ключ
+  dns auto on|off    Включить автовыбор DNS или восстановить прежнюю настройку
+  recovery status    Показать этап прерванного hard-sync и состояние блокировки
+  recovery resume    Восстановить XKeen и продолжить прерванное применение
+  recovery abort     Восстановить XKeen и отменить прерванное применение
+  stop               Перейти на статический ключ и остановить службу подписки
+  start              Вернуться к ключам подписки и запустить службу
   hold on|off        Приостановить или возобновить автообновление
   reconcile          Восстановить сохранённые узлы и выбор через API
   gc                 Удалить старые узлы после периода ожидания
   recover|abort      Завершить или откатить прерванное применение
   url set|migrate    Сохранить URL (set читает его из стандартного ввода)
-  update КОМАНДА     Дополнительно: check|status [--json]|download|apply|enable|pause
+  update КОМАНДА     Дополнительно: check|status [--json]|download|apply|policy patch|minor|enable|pause
   config-example     Показать пример конфигурации без секретов
   version [--json]   Показать версию
   daemon             Запустить службу на переднем плане
+  webui serve        Запустить Web UI отдельно от службы
 
 hard-sync временно прерывает VPN-соединения и перезапускает XKeen.
 При ошибке загрузки XKeen запускается обратно, старые ключи сохраняются.
@@ -142,6 +147,41 @@ func run() error {
 		return err
 	}
 	engine := hw.New(c)
+	if command == "webui" {
+		if len(args) != 2 {
+			return errors.New("использование: hotwatcher webui token|serve")
+		}
+		switch args[1] {
+		case "token":
+			token, tokenErr := webToken(c)
+			if tokenErr == nil {
+				fmt.Println(token)
+			}
+			return tokenErr
+		case "serve":
+			ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+			defer cancel()
+			return serveWebUI(ctx, c, engine)
+		default:
+			return errors.New("использование: hotwatcher webui token|serve")
+		}
+	}
+	if command == "url-test" {
+		if len(args) > 2 {
+			return errors.New("использование: hotwatcher url-test [ТЕГ]")
+		}
+		tag := ""
+		if len(args) == 2 {
+			tag = args[1]
+		}
+		return hw.WithLock(c, func() error {
+			report, testErr := engine.URLTestKey(tag)
+			if len(report.Results) > 0 {
+				printJSON(report)
+			}
+			return testErr
+		})
+	}
 	if command == "dns" {
 		return dnsCommand(c, engine, args[1:])
 	}
@@ -272,13 +312,40 @@ func run() error {
 				return errors.New("select requires a tag or exact name from keys")
 			}
 			return engine.Select(strings.Join(args[1:], " "))
+		case "pin":
+			if len(args) < 2 {
+				return errors.New("укажите имя или тег ключа из keys")
+			}
+			return engine.Pin(strings.Join(args[1:], " "))
+		case "auto":
+			if len(args) != 1 {
+				return errors.New("команда auto не принимает аргументы")
+			}
+			selected, er := engine.Automatic()
+			if selected != "" {
+				fmt.Println("Выбранный ключ:", selected)
+			}
+			return er
+		case "emergency":
+			if len(args) != 1 {
+				return errors.New("вставьте VLESS URI через стандартный ввод, без аргументов команды")
+			}
+			b, er := io.ReadAll(io.LimitReader(os.Stdin, 4097))
+			if er != nil || len(b) > 4096 {
+				return errors.New("не удалось прочитать аварийный VLESS URI")
+			}
+			result, er := engine.ImportEmergency(string(b))
+			if er == nil {
+				printJSON(result)
+			}
+			return er
 		case "check-key":
 			if len(args) != 1 {
 				return errors.New("check-key takes no arguments")
 			}
 			selected, er := engine.CheckKey()
 			if er == nil {
-				fmt.Println("Verified selected key:", selected)
+				fmt.Println("Проверенный выбранный ключ:", selected)
 			}
 			return er
 		case "gc":
@@ -489,6 +556,13 @@ func ageText(d time.Duration) string {
 func daemon(c hw.Config, e *hw.Engine) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+	if c.WebUIEnabled {
+		go func() {
+			if err := serveWebUI(ctx, c, e); err != nil {
+				hw.SafeLog(c, "webui_failed", map[string]any{"message": "Web UI could not start"})
+			}
+		}()
+	}
 	hw.SafeLog(c, "daemon_started", map[string]any{"interval_seconds": c.IntervalSeconds})
 	next := hw.NextSubscriptionCheck(c)
 	nextKeyCheck := time.Time{} // Check the saved pin once on service startup.

@@ -87,7 +87,7 @@ func TestOfflineRepairRecordsBinaryAndPreservesHighWater(t *testing.T) {
 	Binary = filepath.Join(Root, "hotwatcher")
 	ConfigPath = filepath.Join(Root, "updates.json")
 	defer func() { Root, Binary, ConfigPath = oldRoot, oldBinary, oldConfig }()
-	if err := os.WriteFile(Binary, []byte("candidate-v0.2.10"), 0700); err != nil {
+	if err := os.WriteFile(Binary, []byte("candidate-v0.3.0"), 0700); err != nil {
 		t.Fatal(err)
 	}
 	if err := save(ConfigPath, Defaults()); err != nil {
@@ -96,19 +96,44 @@ func TestOfflineRepairRecordsBinaryAndPreservesHighWater(t *testing.T) {
 	if err := save(statePath(), State{Installed: "0.2.4", InstalledHash: "old", HighWater: 2004, Verified: true}); err != nil {
 		t.Fatal(err)
 	}
-	if err := RepairOfflineBootstrap("0.2.10"); err != nil {
+	if err := RepairOfflineBootstrap("0.3.0"); err != nil {
 		t.Fatal(err)
 	}
 	s := readState()
 	hash, _ := hashFile(Binary)
-	if s.Invalid || s.Installed != "0.2.10" || s.Previous != "0.2.4" || s.InstalledHash != hash || s.HighWater != 2010 || s.Verified {
+	if s.Invalid || s.Installed != "0.3.0" || s.Previous != "0.2.4" || s.InstalledHash != hash || s.HighWater != 3000 || s.Verified {
 		t.Fatal("offline repair state incorrect", s)
 	}
-	if err := save(statePath(), State{Installed: "0.2.11", HighWater: 2011}); err != nil {
+	if err := save(statePath(), State{Installed: "0.3.1", HighWater: 3001}); err != nil {
 		t.Fatal(err)
 	}
-	if err := RepairOfflineBootstrap("0.2.10"); err == nil || readState().HighWater != 2011 {
+	if err := RepairOfflineBootstrap("0.3.0"); err == nil || readState().HighWater != 3001 {
 		t.Fatal("offline repair lowered high-water mark")
+	}
+}
+
+func TestWebUpdatePolicyPreservesMode(t *testing.T) {
+	oldRoot, oldConfig := Root, ConfigPath
+	Root = t.TempDir()
+	ConfigPath = filepath.Join(Root, "updates.json")
+	defer func() { Root, ConfigPath = oldRoot, oldConfig }()
+	if err := os.Chmod(Root, 0700); err != nil {
+		t.Fatal(err)
+	}
+	c := Defaults()
+	c.Mode = "auto"
+	if err := saveConfig(c); err != nil {
+		t.Fatal(err)
+	}
+	if err := SetPolicy("minor"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := GetOverview()
+	if err != nil || got.Policy != "minor" || got.Mode != "auto" || !got.Enabled || got.Installed != "0.3.0" {
+		t.Fatalf("unexpected updater overview: %+v %v", got, err)
+	}
+	if err := SetPolicy("major"); err == nil {
+		t.Fatal("unsupported policy accepted")
 	}
 }
 
