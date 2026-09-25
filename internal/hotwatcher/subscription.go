@@ -21,10 +21,11 @@ import (
 )
 
 type Node struct {
-	Tag      string         `json:"tag"`
-	Identity string         `json:"identity"`
-	Name     string         `json:"name"`
-	Outbound map[string]any `json:"outbound"`
+	Tag       string         `json:"tag"`
+	Identity  string         `json:"identity"`
+	Name      string         `json:"name"`
+	Emergency bool           `json:"emergency,omitempty"`
+	Outbound  map[string]any `json:"outbound"`
 }
 type Parsed struct {
 	Nodes   []Node
@@ -334,6 +335,14 @@ func findNode(nodes []Node, tag string) (Node, bool) {
 		}
 	}
 	return Node{}, false
+}
+func nodeIndex(nodes []Node, tag string) int {
+	for i := range nodes {
+		if nodes[i].Tag == tag {
+			return i
+		}
+	}
+	return -1
 }
 func configBytes(nodes []Node, selected string) []byte {
 	outs := make([]map[string]any, 0, len(nodes))

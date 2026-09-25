@@ -5,6 +5,7 @@
   let current = null;
   let sitesDirty = false;
   let activeJob = 0;
+  const pageTitles = { overview: "Обзор подключения", keys: "Управление ключами", "url-test": "Проверка сайтов", system: "XKeen и Xray", updates: "Обновления" };
 
   async function api(path, options = {}) {
     const response = await fetch(path, {
@@ -15,7 +16,12 @@
     });
     let data;
     try { data = await response.json(); } catch (_) { throw new Error("Сервер вернул неверный ответ"); }
-    if (!response.ok) throw new Error(data.error || "Не удалось выполнить запрос");
+    if (!response.ok) {
+      const error = new Error(data.error || "Не удалось выполнить запрос");
+      error.status = response.status;
+      if (response.status === 401 && path !== "/api/login" && path !== "/api/session") { csrf = ""; activeJob = 0; showLogin("Панель перезапустилась или сессия завершилась. Войдите снова."); }
+      throw error;
+    }
     return data;
   }
 
@@ -52,6 +58,19 @@
   function showApp() {
     $("loginScreen").hidden = true;
     $("appScreen").hidden = false;
+    navigate();
+    if (activePage() !== "system") refreshSystem();
+  }
+
+  function activePage() { const name = location.hash.slice(1); return pageTitles[name] ? name : "overview"; }
+  function navigate() {
+    const page = activePage();
+    for (const section of document.querySelectorAll("[data-page]")) section.hidden = section.dataset.page !== page;
+    for (const link of document.querySelectorAll(".nav-link")) link.classList.toggle("active", link.getAttribute("href") === "#" + page);
+    text("pageCaption", pageTitles[page]);
+    window.scrollTo(0, 0);
+    if (csrf && page === "system") refreshSystem();
+    if (csrf && page === "updates") refreshUpdate();
   }
 
   function make(tag, className, content) {
@@ -77,7 +96,7 @@
       const identityWrap = make("div", "key-name");
       identityWrap.append(make("span", "key-avatar", name.slice(0, 1).toLocaleUpperCase("ru-RU")));
       const identityText = make("span");
-      identityText.append(make("strong", "", name), make("small mono", key.Tag || "—"));
+      identityText.append(make("strong", "", name + (key.Emergency ? " · Аварийный" : "")), make("small mono", key.Tag || "—"));
       identityWrap.append(identityText); identity.append(identityWrap);
       const state = make("td");
       state.append(make("span", "pill " + (key.Selected ? "" : key.Applied ? "muted" : "warning"), key.Selected ? "Выбран" : key.Applied ? "Применён" : "Не применён"));
@@ -95,6 +114,12 @@
           select.type = "button";
           select.addEventListener("click", () => startAction("select", key.Tag));
           group.append(select);
+        }
+        if (!key.Selected || current?.status?.selection_mode !== "manual") {
+          const pin = make("button", "row-button", "Закрепить");
+          pin.type = "button";
+          pin.addEventListener("click", () => startAction("pin", key.Tag));
+          group.append(pin);
         }
       }
       actions.append(group);
@@ -178,7 +203,7 @@
     const selected = list.find((key) => key.Selected);
     const online = !!status.api_reachable && !!status.balancer_api_reachable;
     text("versionLabel", "v" + (data.version || "—"));
-    text("topStatus", online ? "Xray работает" : "Xray недоступен");
+    text("topStatus", online ? "Xray: работает" : "Xray: нет связи");
     $("topStatus").className = "top-status " + (online ? "online" : "offline");
     badge($("connectionBadge"), online ? "Активно" : "Нет связи", online ? "good" : "bad");
     text("selectedName", selected?.Name || (status.adopted ? "Ключ не найден" : "Не подключено"));
@@ -196,6 +221,14 @@
     const interrupted = !!recovery.pending_transaction || !!recovery.hard_sync;
     text("recoveryState", interrupted ? "Нужны действия" : "В норме");
     text("recoveryDetail", recovery.suggested_command || "Незавершённых операций нет");
+    const manual = status.selection_mode === "manual";
+    text("modeTitle", manual ? "Закреплённый ключ" : "Автоматический выбор");
+    text("modeDescription", manual ? "Hot Watcher не сменит ключ автоматически, даже если проверка обнаружит ошибку." : "Hot Watcher сравнивает задержку и доступность обязательных сайтов.");
+    $("pinSelectedButton").disabled = !selected || manual;
+    $("autoButton").disabled = !manual;
+    const emergency = list.find((key) => key.Emergency);
+    text("emergencyCurrent", emergency ? "Добавлен: " + (emergency.Name || emergency.Tag) : "Не добавлен");
+    $("forgetEmergencyButton").disabled = !emergency;
     renderKeys(keys);
     renderSites(data.sites || []);
     renderResults(data.last_test);
@@ -208,12 +241,41 @@
     try { renderOverview(await api("/api/overview")); }
     catch (error) { showBanner("Не удалось обновить панель", error.message, "failed"); }
   }
+  async function refreshSystem() {
+    try {
+      const state = await api("/api/system");
+      const label = !state.installed ? "Не найден" : state.command_ok ? "Статус получен" : "Ошибка команды";
+      text("xkeenState", label);
+      text("xkeenTopStatus", "XKeen: " + (state.command_ok ? "отвечает" : "нет статуса"));
+      $("xkeenTopStatus").className = "top-status " + (state.command_ok ? "online" : "offline");
+      text("xkeenChecked", "Проверено: " + dateLabel(state.checked_at));
+      text("xkeenStatusText", (state.status || []).join("\n") || "Статус пока недоступен");
+      text("xkeenLogText", (state.detached_log || []).join("\n") || "Записей пока нет");
+      text("xrayLogText", (state.xray_error_log || []).join("\n") || "Записей пока нет");
+    } catch (error) { showBanner("Статус XKeen", error.message, "failed"); }
+  }
+  async function refreshUpdate() {
+    try {
+      const state = await api("/api/update");
+      text("installedVersion", state.installed);
+      text("availableVersion", state.available && state.verified ? state.available : "Нет кандидата");
+      text("updateMode", !state.enabled ? "Обновления выключены" : state.mode === "auto" ? "Автоустановка" : "Ручная установка");
+      text("lastUpdateCheck", state.last_check && !state.last_check.startsWith("0001") ? "Проверено: " + dateLabel(state.last_check) : "Проверка ещё не выполнялась");
+      const last = state.last_result;
+      text("updateResult", state.state_invalid ? "Состояние повреждено" : state.check_failed ? "Ошибка проверки" : last?.outcome === "installed" ? "Установлена " + last.target : last?.outcome === "rolled_back" ? "Выполнен откат" : "Нет данных");
+      text("updatePhase", state.pending_phase ? "Этап: " + state.pending_phase : "Нет текущей установки");
+      $("updatePolicy").value = state.policy || "patch";
+	  $("enableUpdateButton").hidden = !!state.enabled;
+      $("installUpdateButton").disabled = !state.enabled || !state.verified || !state.available || !!state.pending_phase || state.state_invalid;
+      $("checkUpdateButton").disabled = !state.enabled || state.state_invalid;
+    } catch (error) { showBanner("Обновления", error.message, "failed"); }
+  }
   async function startAction(action, tag = "") {
-    const names = { sync: "Синхронизация", "check-key": "Проверка ключа", "url-test": "URL Test", select: "Выбор ключа" };
+    const names = { sync: "Синхронизация", "check-key": "Проверка ключа", "url-test": "URL Test", select: "Выбор ключа", pin: "Закрепление ключа", auto: "Автовыбор", "forget-emergency": "Аварийный ключ", "update-enable": "Включение обновлений", "update-check": "Проверка обновлений", "update-install": "Установка обновления" };
     try {
       const job = await api("/api/action", { method: "POST", body: JSON.stringify({ action, tag }) });
       activeJob = job.id;
-      showBanner(names[action] || "Операция", "Проверка выполняется. Подключение остаётся на старом ключе до успешного результата.");
+      showBanner(names[action] || "Операция", action === "update-install" ? "Установщик запущен. Панель может ненадолго перезапуститься." : "Выполняется…");
       await pollJob();
     } catch (error) { showBanner(names[action] || "Операция", error.message, "failed"); }
   }
@@ -227,7 +289,28 @@
       showBanner(job.state === "succeeded" ? "Операция завершена" : "Операция не выполнена", job.message, job.state);
       if (job.report?.results?.length) renderResults(job.report);
       await refresh();
-    } catch (error) { showBanner("Проверка состояния", error.message, "failed"); setTimeout(pollJob, 2500); }
+      if (activePage() === "updates") await refreshUpdate();
+    } catch (error) { if (error.status === 401) return; showBanner("Проверка состояния", error.message, "failed"); setTimeout(pollJob, 2500); }
+  }
+
+  async function startEmergency() {
+    const uri = $("emergencyInput").value.trim();
+    if (!uri.startsWith("vless://")) { showBanner("Аварийный ключ", "Вставьте полный vless:// URI.", "failed"); return; }
+    try {
+      const job = await api("/api/emergency", { method: "POST", body: JSON.stringify({ uri }) });
+      $("emergencyInput").value = "";
+      activeJob = job.id;
+      showBanner("Аварийный ключ", "Проверяю формат и конфигурацию Xray…");
+      await pollJob();
+    } catch (error) { showBanner("Аварийный ключ", error.message, "failed"); }
+  }
+
+  async function saveUpdatePolicy() {
+    try {
+      await api("/api/update/policy", { method: "PUT", body: JSON.stringify({ policy: $("updatePolicy").value }) });
+      showBanner("Политика обновлений", "Сохранено. Теперь можно проверить релизы.", "succeeded");
+      await refreshUpdate();
+    } catch (error) { showBanner("Политика обновлений", error.message, "failed"); }
   }
 
   $("loginForm").addEventListener("submit", async (event) => {
@@ -245,16 +328,20 @@
   $("syncButton").addEventListener("click", () => startAction("sync"));
   $("checkButton").addEventListener("click", () => startAction("check-key"));
   $("testSelectedButton").addEventListener("click", () => startAction("url-test"));
+  $("pinSelectedButton").addEventListener("click", () => { const key = current?.keys?.Keys?.find((item) => item.Selected); if (key) startAction("pin", key.Tag); });
+  $("autoButton").addEventListener("click", () => startAction("auto"));
+  $("emergencyButton").addEventListener("click", startEmergency);
+  $("forgetEmergencyButton").addEventListener("click", () => startAction("forget-emergency"));
+  $("refreshSystemButton").addEventListener("click", refreshSystem);
+	$("enableUpdateButton").addEventListener("click", () => startAction("update-enable"));
+  $("checkUpdateButton").addEventListener("click", () => startAction("update-check"));
+  $("installUpdateButton").addEventListener("click", () => startAction("update-install"));
+  $("savePolicyButton").addEventListener("click", saveUpdatePolicy);
   $("saveSitesButton").addEventListener("click", saveSites);
   $("addSiteButton").addEventListener("click", () => { addSiteRow(); sitesDirty = true; });
   $("keySearch").addEventListener("input", () => renderKeys(current?.keys));
   $("dismissBanner").addEventListener("click", () => { $("operationBanner").hidden = true; });
-  for (const link of document.querySelectorAll(".nav-link")) {
-    link.addEventListener("click", () => {
-      document.querySelectorAll(".nav-link").forEach((item) => item.classList.remove("active"));
-      link.classList.add("active");
-    });
-  }
+  window.addEventListener("hashchange", navigate);
 
   (async () => {
     try {
@@ -268,5 +355,5 @@
       } else showLogin();
     } catch (error) { showLogin(error.message); }
   })();
-  setInterval(() => { if (csrf && !activeJob && !sitesDirty) refresh(); }, 30000);
+  setInterval(() => { if (csrf && !activeJob && !sitesDirty) { refresh(); if (activePage() === "system" || activePage() === "overview") refreshSystem(); if (activePage() === "updates") refreshUpdate(); } }, 30000);
 })();

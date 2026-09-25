@@ -26,9 +26,10 @@ type fetchedKeys struct {
 
 type KeyInventoryEntry struct {
 	FetchedKey
-	Selected bool
-	Applied  bool
-	Latest   bool
+	Selected  bool
+	Applied   bool
+	Latest    bool
+	Emergency bool
 }
 
 type KeyInventory struct {
@@ -106,8 +107,8 @@ func (e *Engine) KeysSnapshot() (KeyInventory, error) {
 			if valid {
 				report.FetchedAt = &fetched.Time
 				for _, key := range fetched.Keys {
-					_, applied := active[key.Tag]
-					report.Keys = append(report.Keys, KeyInventoryEntry{FetchedKey: key, Selected: key.Tag == s.Selected, Applied: applied, Latest: true})
+					node, applied := active[key.Tag]
+					report.Keys = append(report.Keys, KeyInventoryEntry{FetchedKey: key, Selected: key.Tag == s.Selected, Applied: applied, Latest: true, Emergency: applied && node.Emergency})
 				}
 			} else {
 				report.Note = "Последний список загрузки повреждён; показаны применённые ключи."
@@ -122,7 +123,7 @@ func (e *Engine) KeysSnapshot() (KeyInventory, error) {
 	}
 	for _, node := range s.Active {
 		if !seen[node.Tag] {
-			report.Keys = append(report.Keys, KeyInventoryEntry{FetchedKey: FetchedKey{Tag: node.Tag, Name: safeLabel(node.Name)}, Selected: node.Tag == s.Selected, Applied: true})
+			report.Keys = append(report.Keys, KeyInventoryEntry{FetchedKey: FetchedKey{Tag: node.Tag, Name: safeLabel(node.Name)}, Selected: node.Tag == s.Selected, Applied: true, Emergency: node.Emergency})
 		}
 	}
 	sort.Slice(report.Keys, func(i, j int) bool {

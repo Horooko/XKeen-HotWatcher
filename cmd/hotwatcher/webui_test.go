@@ -40,6 +40,12 @@ func TestWebUIRequiresSessionAndCSRFToEditSites(t *testing.T) {
 	if got := call("PUT", "/api/sites", []byte(`{"sites":["example.com"]}`), nil, ""); got.Code != 403 {
 		t.Fatalf("unauthenticated edit accepted: %d", got.Code)
 	}
+	if got := call("POST", "/api/emergency", []byte(`{"uri":"vless://secret"}`), nil, ""); got.Code != 403 {
+		t.Fatalf("unauthenticated emergency action accepted: %d", got.Code)
+	}
+	if got := call("PUT", "/api/update/policy", []byte(`{"policy":"minor"}`), nil, ""); got.Code != 403 {
+		t.Fatalf("unauthenticated updater edit accepted: %d", got.Code)
+	}
 	if got := call("POST", "/api/login", []byte(`{"token":"wrong"}`), nil, ""); got.Code != 401 {
 		t.Fatalf("bad token accepted: %d", got.Code)
 	}
@@ -56,6 +62,12 @@ func TestWebUIRequiresSessionAndCSRFToEditSites(t *testing.T) {
 	cookie := login.Result().Cookies()[0]
 	if got := call("PUT", "/api/sites", []byte(`{"sites":["example.com"]}`), cookie, ""); got.Code != 403 {
 		t.Fatalf("edit without CSRF accepted: %d", got.Code)
+	}
+	if got := call("POST", "/api/emergency", []byte(`{"uri":"vless://secret"}`), cookie, ""); got.Code != 403 {
+		t.Fatalf("emergency without CSRF accepted: %d", got.Code)
+	}
+	if got := call("POST", "/api/action", []byte(`{"action":"update-install"}`), cookie, ""); got.Code != 403 {
+		t.Fatalf("update install without CSRF accepted: %d", got.Code)
 	}
 	if got := call("PUT", "/api/sites", []byte(`{"sites":["http://example.com"]}`), cookie, session.CSRF); got.Code != 400 {
 		t.Fatalf("unsafe site accepted: %d", got.Code)

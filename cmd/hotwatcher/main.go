@@ -30,6 +30,9 @@ func usage() {
   hard-sync      Остановить XKeen, скачать подписку напрямую, запустить XKeen и применить ключи
   check-key      Проверить активный ключ и при сбое выбрать рабочий
   select ИМЯ    Выбрать ключ по точному имени или тегу из keys
+  pin ИМЯ       Закрепить ключ и запретить автоматическую смену
+  auto          Снять закрепление и выбрать лучший доступный ключ
+  emergency     Прочитать один VLESS URI из ввода и аварийно применить его
   status         Показать состояние службы и выбранный ключ
   webui token    Показать токен входа в Web UI
   update         Проверить и установить доступное обновление программы
@@ -58,7 +61,7 @@ func advancedUsage() {
   gc                 Удалить старые узлы после периода ожидания
   recover|abort      Завершить или откатить прерванное применение
   url set|migrate    Сохранить URL (set читает его из стандартного ввода)
-  update КОМАНДА     Дополнительно: check|status [--json]|download|apply|enable|pause
+  update КОМАНДА     Дополнительно: check|status [--json]|download|apply|policy patch|minor|enable|pause
   config-example     Показать пример конфигурации без секретов
   version [--json]   Показать версию
   daemon             Запустить службу на переднем плане
@@ -309,13 +312,40 @@ func run() error {
 				return errors.New("select requires a tag or exact name from keys")
 			}
 			return engine.Select(strings.Join(args[1:], " "))
+		case "pin":
+			if len(args) < 2 {
+				return errors.New("укажите имя или тег ключа из keys")
+			}
+			return engine.Pin(strings.Join(args[1:], " "))
+		case "auto":
+			if len(args) != 1 {
+				return errors.New("команда auto не принимает аргументы")
+			}
+			selected, er := engine.Automatic()
+			if selected != "" {
+				fmt.Println("Выбранный ключ:", selected)
+			}
+			return er
+		case "emergency":
+			if len(args) != 1 {
+				return errors.New("вставьте VLESS URI через стандартный ввод, без аргументов команды")
+			}
+			b, er := io.ReadAll(io.LimitReader(os.Stdin, 4097))
+			if er != nil || len(b) > 4096 {
+				return errors.New("не удалось прочитать аварийный VLESS URI")
+			}
+			result, er := engine.ImportEmergency(string(b))
+			if er == nil {
+				printJSON(result)
+			}
+			return er
 		case "check-key":
 			if len(args) != 1 {
 				return errors.New("check-key takes no arguments")
 			}
 			selected, er := engine.CheckKey()
 			if er == nil {
-				fmt.Println("Verified selected key:", selected)
+				fmt.Println("Проверенный выбранный ключ:", selected)
 			}
 			return er
 		case "gc":
