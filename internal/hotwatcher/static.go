@@ -198,7 +198,7 @@ func (e *Engine) StartFromStatic() error {
 			tags[node.Tag] = true
 		}
 	}
-	selected, err := e.fastest(s.Active, s.Active, tags, s.Selected)
+	selected, err := e.fastest(s.Active, s.Selected, s.SelectedAt)
 	if err != nil {
 		return errors.New("no working subscription key; static route retained")
 	}

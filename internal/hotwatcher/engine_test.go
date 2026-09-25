@@ -95,6 +95,11 @@ func setupEngine(t *testing.T) (*Engine, *fakeRuntime, *string) {
 	t.Helper()
 	dir := t.TempDir()
 	c := Defaults()
+	// Legacy transaction tests exercise switching mechanics independently of
+	// the default anti-flapping policy; dedicated tests cover that policy.
+	c.KeySwitchMinImprovementMS = 0
+	c.KeySwitchMinImprovementPercent = 0
+	c.KeySwitchCooldownSeconds = 0
 	c.StateDir = filepath.Join(dir, "state")
 	c.ConfigDir = filepath.Join(dir, "configs")
 	os.Mkdir(c.StateDir, 0700)
@@ -283,6 +288,88 @@ func TestLatencySelectionChangesOnUnchangedSubscription(t *testing.T) {
 	after, _ := os.ReadFile(outputFile(e.C))
 	if string(before) != string(after) || r.override != selected || e.pending() {
 		t.Fatal("failed probes changed runtime")
+	}
+}
+
+func TestLatencySelectionNeedsMaterialGainAfterCooldown(t *testing.T) {
+	e, r, raw := setupEngine(t)
+	*raw = uri(testUUID, "FI") + "\n" + uri("00000000-0000-4000-8000-000000000002", "DE")
+	if err := e.Sync(true); err != nil {
+		t.Fatal(err)
+	}
+	s, err := e.state()
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := s.Active[0].Tag
+	if other == s.Selected {
+		other = s.Active[1].Tag
+	}
+	e.C.KeySwitchMinImprovementMS = 80
+	e.C.KeySwitchMinImprovementPercent = 20
+	e.C.KeySwitchCooldownSeconds = 1800
+	r.latencies = map[string]time.Duration{s.Selected: 500 * time.Millisecond, other: 100 * time.Millisecond}
+	chosen, err := e.fastest(s.Active, s.Selected, e.Now().Add(-5*time.Minute))
+	if err != nil || chosen != s.Selected {
+		t.Fatalf("cooldown ignored: %s, %v", chosen, err)
+	}
+	r.latencies[other] = 450 * time.Millisecond
+	chosen, err = e.fastest(s.Active, s.Selected, e.Now().Add(-time.Hour))
+	if err != nil || chosen != s.Selected {
+		t.Fatalf("small gain switched key: %s, %v", chosen, err)
+	}
+	r.latencies[other] = 100 * time.Millisecond
+	chosen, err = e.fastest(s.Active, s.Selected, e.Now().Add(-time.Hour))
+	if err != nil || chosen != other {
+		t.Fatalf("material gain ignored: %s, %v", chosen, err)
+	}
+	r.failedTags = map[string]bool{s.Selected: true}
+	chosen, err = e.fastest(s.Active, s.Selected, e.Now().Add(-time.Minute))
+	if err != nil || chosen != other {
+		t.Fatalf("failed active key was retained: %s, %v", chosen, err)
+	}
+}
+
+func TestSyncKeepsWorkingKeyUntilCooldownAndGain(t *testing.T) {
+	e, r, raw := setupEngine(t)
+	*raw = uri(testUUID, "FI") + "\n" + uri("00000000-0000-4000-8000-000000000002", "DE")
+	if err := e.Sync(true); err != nil {
+		t.Fatal(err)
+	}
+	s, _ := e.state()
+	initial := s.Selected
+	other := s.Active[0].Tag
+	if other == initial {
+		other = s.Active[1].Tag
+	}
+	e.C.KeySwitchMinImprovementMS = 80
+	e.C.KeySwitchMinImprovementPercent = 20
+	e.C.KeySwitchCooldownSeconds = 1800
+	r.latencies = map[string]time.Duration{initial: 500 * time.Millisecond, other: 100 * time.Millisecond}
+	if err := e.Sync(false); err != nil {
+		t.Fatal(err)
+	}
+	s, _ = e.state()
+	if s.Selected != initial {
+		t.Fatal("sync switched during cooldown")
+	}
+	clock := e.Now().Add(time.Hour)
+	e.Now = func() time.Time { return clock }
+	r.latencies[other] = 450 * time.Millisecond
+	if err := e.Sync(false); err != nil {
+		t.Fatal(err)
+	}
+	s, _ = e.state()
+	if s.Selected != initial {
+		t.Fatal("sync switched for a small gain")
+	}
+	r.latencies[other] = 100 * time.Millisecond
+	if err := e.Sync(false); err != nil {
+		t.Fatal(err)
+	}
+	s, _ = e.state()
+	if s.Selected != other {
+		t.Fatal("sync ignored large gain after cooldown")
 	}
 }
 

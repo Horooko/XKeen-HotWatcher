@@ -157,6 +157,33 @@ type State struct {
 	Failures      int       `json:"failures"`
 	Invalid       bool      `json:"-"`
 }
+
+type UpdateResult struct {
+	Schema   int       `json:"schema"`
+	Time     time.Time `json:"time"`
+	Outcome  string    `json:"outcome"`
+	Previous string    `json:"previous,omitempty"`
+	Target   string    `json:"target,omitempty"`
+}
+
+func resultPath() string { return filepath.Join(Root, "last-result.json") }
+
+func recordResult(outcome, previous, target string) {
+	_ = save(resultPath(), UpdateResult{Schema: 1, Time: time.Now().UTC(), Outcome: outcome, Previous: previous, Target: target})
+}
+
+func readResult() *UpdateResult {
+	b, err := privateRead(resultPath(), 4096)
+	if err != nil {
+		return nil
+	}
+	var result UpdateResult
+	if strictJSON(b, &result) != nil || result.Schema != 1 || result.Time.IsZero() || (result.Outcome != "installed" && result.Outcome != "rolled_back") {
+		return nil
+	}
+	return &result
+}
+
 type Journal struct {
 	ID            string `json:"id"`
 	Phase         string `json:"phase"`
@@ -1129,6 +1156,7 @@ func apply(ctx context.Context, c Config, m Manifest, a Asset, source string, s 
 		return rollback(j, s, e)
 	}
 	*s = nextState
+	recordResult("installed", nextState.Previous, nextState.Installed)
 	_ = os.Remove(maintenancePath())
 	_ = os.Remove(journalPath())
 	_ = os.Remove(source)
@@ -1239,6 +1267,7 @@ func rollback(j Journal, s *State, reason error) error {
 	s.BlockedHash = j.Hash
 	s.Deferred = reason.Error()
 	_ = save(statePath(), s)
+	recordResult("rolled_back", j.Version, s.Installed)
 	_ = os.Remove(maintenancePath())
 	if j.Enabled {
 		_, _ = exec.Command("/opt/etc/init.d/S99hotwatcher", "start").CombinedOutput()

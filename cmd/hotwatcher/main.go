@@ -27,13 +27,18 @@ func usage() {
   keys --check   Заново измерить доступность применённых ключей (может быть долго)
   dns status     Показать DNS-настройку Xray и состояние автоматического выбора
   dns test       Проверить задержку доверенных DNS-серверов с роутера
+  dns verify     Проверить DNS в отдельном Xray напрямую и через выбранный ключ
   dns auto on    Включить автоматический выбор нескольких DNS в Xray
   dns auto off   Восстановить прежнюю DNS-настройку Xray
   sync           Обновить ключи подписки при работающем VPN
   hard-sync      Остановить XKeen, скачать подписку напрямую, запустить XKeen и применить ключи
+  recovery status Показать этап прерванного hard-sync и причину занятой блокировки
+  recovery resume Восстановить XKeen и продолжить прерванное применение
+  recovery abort  Восстановить XKeen и отменить прерванное применение
   check-key      Проверить активный ключ и при сбое выбрать рабочий
   select ИМЯ    Выбрать ключ по точному имени или тегу из keys
   status         Показать состояние службы и выбранный ключ
+  doctor network Проверить подписку, ключ, API и DNS по этапам
   stop           Перейти на статический ключ и остановить службу подписки
   start          Вернуться к ключам подписки и запустить службу
   update         Проверить и установить доступное обновление программы
@@ -52,7 +57,7 @@ func advancedUsage() {
   gc                 Удалить старые узлы после периода ожидания
   recover|abort      Завершить или откатить прерванное применение
   url set|migrate    Сохранить URL (set читает его из стандартного ввода)
-  update КОМАНДА     Дополнительно: check|status|download|apply|rollback
+  update КОМАНДА     Дополнительно: check|status [--json]|download|apply|enable|pause
   config-example     Показать пример конфигурации без секретов
   version [--json]   Показать версию
   daemon             Запустить службу на переднем плане
@@ -145,6 +150,27 @@ func run() error {
 			return errors.New("hard-sync не принимает аргументы")
 		}
 		return hardSync(c, engine)
+	}
+	if command == "recovery" {
+		return recoveryCommand(c, engine, args[1:])
+	}
+	if command == "doctor" && len(args) == 2 && args[1] == "network" {
+		fmt.Println("Проверяю подключение по этапам; сетевые пробы могут занять несколько минут…")
+		report := engine.DoctorNetworkWithProgress(func(check hw.NetworkCheck) {
+			state := "ОШИБКА"
+			if check.OK {
+				state = "OK"
+			}
+			fmt.Printf("[%s] %s: %s\n", state, check.Name, check.Detail)
+		})
+		printJSON(report)
+		if !report.Healthy {
+			return errors.New("часть сетевых проверок не прошла; действия указаны в отчёте")
+		}
+		return nil
+	}
+	if command == "doctor" && len(args) != 1 {
+		return errors.New("использование: hotwatcher doctor [network]")
 	}
 	if command == "stop" || command == "start" {
 		if len(args) != 1 {
