@@ -54,7 +54,7 @@ func Command(args []string) error {
 		}
 		hash, _ := hashFile(Binary)
 		j, _ := readJournal()
-		xray, xerr := xrayIdentity()
+		xray, xerr := xrayIdentities()
 		var xrayStatus any = xray
 		if xerr != nil {
 			xrayStatus = xerr.Error()
@@ -63,7 +63,7 @@ func Command(args []string) error {
 		if installed == "" {
 			installed = BuildInfo()["version"].(string)
 		}
-		b, _ := json.MarshalIndent(map[string]any{"configuration": c, "state": s, "state_invalid": s.Invalid, "installed_version": installed, "installed_hash": hash, "architecture": BuildInfo()["arch"], "pending_update_phase": j.Phase, "primary_xray": xrayStatus}, "", "  ")
+		b, _ := json.MarshalIndent(map[string]any{"configuration": c, "state": s, "state_invalid": s.Invalid, "installed_version": installed, "installed_hash": hash, "architecture": BuildInfo()["arch"], "pending_update_phase": j.Phase, "xray_processes": xrayStatus}, "", "  ")
 		fmt.Println(string(b))
 		return nil
 	case "check", "download", "apply":
@@ -138,7 +138,11 @@ func Command(args []string) error {
 			return nil
 		}
 		fmt.Println("Проверяю новую сборку, заменяю Hot Watcher и жду готовности службы…")
+		startedAt := time.Now()
 		if err := apply(ctx, c, m, a, p, &s); err != nil {
+			if result := readResult(); result == nil || result.Time.Before(startedAt) {
+				recordDeferred(installedVersion(s), m.Version, err)
+			}
 			fmt.Println("Установка не завершена. Состояние отката: hotwatcher update status")
 			return err
 		}
@@ -316,6 +320,8 @@ func printUpdateOverview(c Config, s State) {
 			fmt.Printf("Последний результат: установлена %s (%s)\n", result.Target, result.Time.Local().Format("2006-01-02 15:04"))
 		case "rolled_back":
 			fmt.Printf("Последний результат: возвращён прежний бинарник %s после сбоя %s (%s); проверьте службу\n", result.Target, result.Previous, result.Time.Local().Format("2006-01-02 15:04"))
+		case "deferred":
+			fmt.Printf("Последняя попытка установки %s остановлена: %s (%s)\n", result.Target, result.Reason, result.Time.Local().Format("2006-01-02 15:04"))
 		}
 	} else if s.Deferred != "" {
 		fmt.Println("Последний результат: проверка или установка отложена из-за ошибки")

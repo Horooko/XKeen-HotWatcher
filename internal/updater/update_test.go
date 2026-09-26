@@ -6,10 +6,14 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	hw "local/xkeen-hot-watcher/internal/hotwatcher"
 	"os"
 	"path/filepath"
+	"runtime"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -157,6 +161,11 @@ func TestUpdateResultDoesNotChangeStrictUpdaterState(t *testing.T) {
 	if result == nil || result.Outcome != "installed" || result.Target != "0.2.10" || readState().Invalid {
 		t.Fatalf("update result broke state compatibility: %+v", result)
 	}
+	recordDeferred("0.2.9", "0.2.10", errors.New("Xray API unavailable"))
+	result = readResult()
+	if result == nil || result.Outcome != "deferred" || result.Reason != "Xray API unavailable" || readState().Invalid {
+		t.Fatalf("deferred update result was lost: %+v", result)
+	}
 }
 
 func TestUpdateOverviewShowsVersionAndRollbackWithoutRawState(t *testing.T) {
@@ -233,5 +242,78 @@ func TestBootRecoveryRestoresPreviousBinary(t *testing.T) {
 	}
 	if _, e = os.Lstat(maintenancePath()); !os.IsNotExist(e) {
 		t.Fatal("maintenance guard left after rollback")
+	}
+}
+
+func TestUpdaterTracksServersWithoutCountingXrayHelpers(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("proc fixture uses Linux executable symlinks")
+	}
+	root := t.TempDir()
+	binary := "/opt/sbin/xray"
+	stateDir := "/opt/var/lib/hotwatcher"
+	writeProcess := func(pid, start string, args ...string) {
+		t.Helper()
+		dir := filepath.Join(root, pid)
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(binary, filepath.Join(dir, "exe")); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "cmdline"), []byte(strings.Join(args, "\x00")+"\x00"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		fields := make([]string, 20)
+		for i := range fields {
+			fields[i] = "0"
+		}
+		fields[0], fields[19] = "S", start
+		if err := os.WriteFile(filepath.Join(dir, "stat"), []byte(pid+" (xray) "+strings.Join(fields, " ")), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeProcess("200", "10", binary, "run", "-confdir", "/opt/etc/xray/configs")
+	writeProcess("201", "11", binary, "run", "-confdir", "/opt/etc/xray/configs")
+	writeProcess("202", "12", binary, "api", "bi", "--server=127.0.0.1:10085", "proxy")
+	writeProcess("203", "13", binary, "run", "-config", stateDir+"/probe-1/config.json")
+	before, err := scanXrayIdentities(root, binary, stateDir)
+	if err != nil || len(before) != 2 || before[0].PID != 200 || before[1].PID != 201 {
+		t.Fatalf("wrong server snapshot: %+v %v", before, err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "201", "cmdline"), []byte(binary+"\x00run\x00-confdir\x00/opt/etc/xray/other\x00"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	after, err := scanXrayIdentities(root, binary, stateDir)
+	if err != nil || slices.Equal(before, after) {
+		t.Fatalf("changed server escaped identity check: %+v %v", after, err)
+	}
+	for _, pid := range []string{"200", "201"} {
+		if err := os.RemoveAll(filepath.Join(root, pid)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stopped, err := scanXrayIdentities(root, binary, stateDir)
+	if err != nil || len(stopped) != 0 {
+		t.Fatalf("helper processes should not block a recovery update: %+v %v", stopped, err)
+	}
+}
+
+func TestUpdaterRuntimeSnapshotAllowsUnhealthyBaseline(t *testing.T) {
+	baseline := runtimeSnapshotFromStatus(map[string]any{
+		"adopted": true, "selected": "key-a", "api_reachable": false, "balancer_api_reachable": false,
+	})
+	if !baseline.Adopted || baseline.APIReachable || baseline.BalancerAPIReachable || baseline.Selected != "key-a" {
+		t.Fatalf("unhealthy baseline was rejected or lost: %+v", baseline)
+	}
+	if baseline != runtimeSnapshotFromStatus(map[string]any{
+		"adopted": true, "selected": "key-a", "api_reachable": false, "balancer_api_reachable": false,
+	}) {
+		t.Fatal("unchanged unhealthy runtime did not compare equal")
+	}
+	if baseline == runtimeSnapshotFromStatus(map[string]any{
+		"adopted": true, "selected": "key-a", "api_reachable": true, "balancer_api_reachable": false,
+	}) {
+		t.Fatal("runtime API change escaped comparison")
 	}
 }

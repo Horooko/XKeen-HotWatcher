@@ -296,7 +296,7 @@
       text("updateMode", !state.enabled ? "Обновления выключены" : state.mode === "auto" ? "Автоустановка" : "Ручная установка");
       text("lastUpdateCheck", state.last_check && !state.last_check.startsWith("0001") ? "Проверено: " + dateLabel(state.last_check) : "Проверка ещё не выполнялась");
       const last = state.last_result;
-      text("updateResult", state.state_invalid ? "Состояние повреждено" : state.check_failed ? "Ошибка проверки" : last?.outcome === "installed" ? "Установлена " + last.target : last?.outcome === "rolled_back" ? "Выполнен откат" : "Нет данных");
+      text("updateResult", state.state_invalid ? "Состояние повреждено" : state.check_failed ? "Ошибка проверки" : last?.outcome === "installed" ? "Установлена " + last.target : last?.outcome === "rolled_back" ? "Выполнен откат" : last?.outcome === "deferred" ? "Установка " + last.target + " остановлена: " + (last.reason || "проверьте журнал") : "Нет данных");
       text("updatePhase", state.pending_phase ? "Этап: " + state.pending_phase : "Нет текущей установки");
       $("updatePolicy").value = state.policy || "patch";
 	  $("enableUpdateButton").hidden = !!state.enabled;

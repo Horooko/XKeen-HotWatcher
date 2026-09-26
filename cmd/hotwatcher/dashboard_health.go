@@ -127,26 +127,7 @@ func xrayProcessRunning(procDir, binary, stateDir string) *bool {
 }
 
 func isXrayServer(args []string, binary, stateDir string) bool {
-	if len(args) == 0 || filepath.Base(args[0]) != filepath.Base(binary) {
-		return false
-	}
-	if len(args) > 1 && args[1] != "run" && !strings.HasPrefix(args[1], "-") {
-		return false
-	}
-	statePrefix := filepath.Clean(stateDir) + string(os.PathSeparator)
-	for _, arg := range args[1:] {
-		if arg == "-test" || arg == "--test" || strings.HasPrefix(arg, "-test=") || strings.HasPrefix(arg, "--test=") || arg == "-version" || arg == "--version" || arg == "-h" || arg == "--help" {
-			return false
-		}
-		// Config flags may use either `-config file` or `-config=file`.
-		if _, value, found := strings.Cut(arg, "="); found {
-			arg = value
-		}
-		if stateDir != "" && strings.HasPrefix(filepath.Clean(arg), statePrefix) {
-			return false
-		}
-	}
-	return true
+	return hw.IsXrayServerCommand(args, binary, stateDir)
 }
 
 func entwareStatusEnv() []string {
