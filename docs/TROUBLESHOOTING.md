@@ -68,6 +68,27 @@ netstat -ltnp 2>/dev/null | grep ':10085'
 API-команд и восстановите XKeen; если `xkeen -start` снова сообщает «уже
 запущен», проверьте, какие именно процессы Xray остались, прежде чем их трогать.
 
+Для контролируемой проверки без фоновых API-команд остановите обе службы Hot
+Watcher, подождите дольше таймаута API и повторите снимок:
+
+```sh
+/opt/etc/init.d/S98hotwatcher-updater stop
+HOTWATCHER_SHUTDOWN_TIMEOUT_SECONDS=300 /opt/etc/init.d/S99hotwatcher stop
+sleep 15
+ps -w | grep '[x]ray'
+netstat -ltnp 2>/dev/null | grep ':10085'
+```
+
+Если основного `xray run` нет, запустите `/opt/sbin/xkeen -start` и снова
+проверьте процесс и порт. При сообщении «xray уже запущен» не убивайте процесс
+по одному лишь PID: сначала выясните его аргументы командной строки и источник
+запуска. После проверки верните обе службы, даже если XKeen не восстановился:
+
+```sh
+/opt/etc/init.d/S98hotwatcher-updater start
+/opt/etc/init.d/S99hotwatcher start
+```
+
 Проверка TLS требует правильных часов роутера. При ошибках сертификатов сначала проверь
 `date`, настройки NTP и CA bundle. Не добавляй `insecure`/отключение сертификатов.
 
