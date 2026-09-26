@@ -26,7 +26,7 @@ func usage() {
 Основные команды:
   adopt          Первое подключение: сохранить старую конфигурацию и применить ключи
   keys           Сразу показать все ключи последней загрузки и сохранённые ключи
-  url-test [ТЕГ] Проверить все обязательные сайты через выбранный или указанный ключ
+  url-test [ТЕГ] Проверить сайты через выбранный ключ; другой тег доступен при выключенной экономной проверке
   sync           Обновить ключи подписки при работающем VPN
   hard-sync      Остановить XKeen, скачать подписку напрямую, запустить XKeen и применить ключи
   check-key      Проверить активный ключ и при сбое выбрать рабочий
@@ -564,6 +564,12 @@ func ageText(d time.Duration) string {
 	return fmt.Sprintf("%d сек", seconds)
 }
 func daemon(c hw.Config, e *hw.Engine) error {
+	unlockDaemon, err := hw.LockDaemon(c.StateDir)
+	if err != nil {
+		hw.SafeLog(c, "daemon_start_refused", map[string]any{"message": err.Error()})
+		return err
+	}
+	defer unlockDaemon()
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	if c.WebUIEnabled {

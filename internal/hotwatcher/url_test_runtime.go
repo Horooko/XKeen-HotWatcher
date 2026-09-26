@@ -15,15 +15,56 @@ import (
 	"time"
 )
 
-// URLTest starts one isolated Xray for this key, then checks every configured
-// site through its loopback HTTP proxy. No production listener is changed.
+// URLTest checks every configured site through this key.
 func (x Xray) URLTest(n Node, sites []string) (URLTestReport, error) {
-	report := URLTestReport{Tag: n.Tag, Time: time.Now().UTC(), Results: make([]URLTestResult, len(sites))}
+	return x.URLTestWithProgress(n, sites, nil)
+}
+
+func (x Xray) URLTestWithProgress(n Node, sites []string, progress func(URLTestReport)) (URLTestReport, error) {
+	economy, err := x.C.EconomyChecks()
+	if err != nil {
+		return URLTestReport{}, err
+	}
+	if economy {
+		return x.urlTestLiveWithProgress(n, sites, progress)
+	}
+	return x.urlTestIsolatedWithProgress(n, sites, progress)
+}
+
+func (x Xray) urlTestLiveWithProgress(n Node, sites []string, progress func(URLTestReport)) (URLTestReport, error) {
+	report, err := startURLTestReport(n, sites, progress, "main_xray")
+	if err != nil {
+		return report, err
+	}
+	deadline := time.Duration(x.C.ProbeTimeoutSeconds*((len(sites)+2)/3)+8) * time.Second
+	ctx, cancel := context.WithTimeout(context.Background(), deadline)
+	defer cancel()
+	err = x.withLiveProbe(n, func(proxy, control *url.URL) error {
+		var testErr error
+		report, testErr = x.runURLTestRequests(ctx, report, sites, progress, proxy, control)
+		return testErr
+	})
+	return report, err
+}
+
+func startURLTestReport(n Node, sites []string, progress func(URLTestReport), mode string) (URLTestReport, error) {
+	report := URLTestReport{Tag: n.Tag, Mode: mode, Time: time.Now().UTC(), ProgressKnown: true, Results: make([]URLTestResult, len(sites))}
 	if len(sites) == 0 || len(sites) > 12 {
 		return report, errors.New("URL Test: неверное количество сайтов")
 	}
 	for i, site := range sites {
 		report.Results[i] = URLTestResult{Site: site, Reason: "проверка не завершена"}
+	}
+	if progress != nil {
+		progress(cloneURLTestReport(report))
+	}
+	return report, nil
+}
+
+func (x Xray) urlTestIsolatedWithProgress(n Node, sites []string, progress func(URLTestReport)) (URLTestReport, error) {
+	report, err := startURLTestReport(n, sites, progress, "isolated")
+	if err != nil {
+		return report, err
 	}
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -53,24 +94,17 @@ func (x Xray) URLTest(n Node, sites []string) (URLTestReport, error) {
 	cmd := exec.CommandContext(ctx, x.C.XrayBinary, "run", "-config", path)
 	cmd.Env = append(isolatedEnv(), "XRAY_LOCATION_ASSET="+x.C.AssetDir)
 	cmd.Stdout, cmd.Stderr = io.Discard, io.Discard
-	if err := cmd.Start(); err != nil {
-		return report, errors.New("URL Test: не удалось запустить временный Xray")
+	probe, err := startAuxiliaryXray(cmd)
+	if err != nil {
+		return report, fmt.Errorf("URL Test: %w", err)
 	}
-	done := make(chan struct{})
-	go func() { _ = cmd.Wait(); close(done) }()
-	defer func() {
-		_ = cmd.Process.Kill()
-		select {
-		case <-done:
-		case <-time.After(3 * time.Second):
-		}
-	}()
+	defer probe.stop()
 	address := fmt.Sprintf("127.0.0.1:%d", port)
 	ready := false
 	for i := 0; i < 50; i++ {
 		select {
-		case <-done:
-			return report, errors.New("URL Test: временный Xray завершился при запуске")
+		case <-probe.done:
+			return report, probe.unexpectedExit("URL Test: временный Xray завершился при запуске")
 		default:
 		}
 		conn, dialErr := net.DialTimeout("tcp", address, 100*time.Millisecond)
@@ -84,13 +118,32 @@ func (x Xray) URLTest(n Node, sites []string) (URLTestReport, error) {
 	if !ready {
 		return report, errors.New("URL Test: временный Xray не открыл локальный порт")
 	}
+	proxy, _ := url.Parse("http://" + address)
+	report, err = x.runURLTestRequests(ctx, report, sites, progress, proxy, nil)
+	if err != nil {
+		return report, err
+	}
+	select {
+	case <-probe.done:
+		return report, probe.unexpectedExit("URL Test: временный Xray завершился до окончания проверки")
+	default:
+	}
+	return report, nil
+}
+
+func (x Xray) runURLTestRequests(ctx context.Context, report URLTestReport, sites []string, progress func(URLTestReport), proxy, control *url.URL) (URLTestReport, error) {
 	tls, err := tlsConfig(x.C)
 	if err != nil {
 		return report, err
 	}
-	proxy, _ := url.Parse("http://" + address)
 	transport := &http.Transport{Proxy: http.ProxyURL(proxy), TLSClientConfig: tls, DisableKeepAlives: true, MaxConnsPerHost: 3}
 	defer transport.CloseIdleConnections()
+	var controlClient *http.Client
+	if control != nil {
+		controlTransport := &http.Transport{Proxy: http.ProxyURL(control), TLSClientConfig: tls, DisableKeepAlives: true, MaxConnsPerHost: 3}
+		defer controlTransport.CloseIdleConnections()
+		controlClient = &http.Client{Transport: controlTransport, Timeout: 3 * time.Second}
+	}
 	client := &http.Client{
 		Transport: transport,
 		Timeout:   time.Duration(x.C.ProbeTimeoutSeconds) * time.Second,
@@ -105,7 +158,20 @@ func (x Xray) URLTest(n Node, sites []string) (URLTestReport, error) {
 			return nil
 		},
 	}
+	if controlClient != nil {
+		controlClient.CheckRedirect = client.CheckRedirect
+	}
 	var wg sync.WaitGroup
+	var resultsMu sync.Mutex
+	publish := func(i int, item URLTestResult) {
+		resultsMu.Lock()
+		item.Completed = true
+		report.Results[i] = item
+		if progress != nil {
+			progress(cloneURLTestReport(report))
+		}
+		resultsMu.Unlock()
+	}
 	sem := make(chan struct{}, 3)
 	for i, site := range sites {
 		wg.Add(1)
@@ -117,7 +183,7 @@ func (x Xray) URLTest(n Node, sites []string) (URLTestReport, error) {
 			request, requestErr := http.NewRequestWithContext(ctx, http.MethodGet, site, nil)
 			if requestErr != nil {
 				item.Reason = "неверный адрес"
-				report.Results[i] = item
+				publish(i, item)
 				return
 			}
 			request.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux aarch64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36")
@@ -132,12 +198,16 @@ func (x Xray) URLTest(n Node, sites []string) (URLTestReport, error) {
 				_ = response.Body.Close()
 				if response.StatusCode >= 200 && response.StatusCode < 300 {
 					milliseconds := float64(time.Since(started).Microseconds()) / 1000
-					item.OK, item.LatencyMS = true, &milliseconds
+					if controlClient != nil && controlRouteOpens(controlClient, request) {
+						item.Reason = "маршрут основного Xray обошёл проверяемый ключ"
+					} else {
+						item.OK, item.LatencyMS = true, &milliseconds
+					}
 				} else {
 					item.Reason = "HTTP-ошибка"
 				}
 			}
-			report.Results[i] = item
+			publish(i, item)
 		}(i, site)
 	}
 	wg.Wait()
@@ -147,10 +217,10 @@ func (x Xray) URLTest(n Node, sites []string) (URLTestReport, error) {
 			report.Passed = false
 		}
 	}
-	select {
-	case <-done:
-		return report, errors.New("URL Test: временный Xray завершился до окончания проверки")
-	default:
-	}
 	return report, nil
+}
+
+func cloneURLTestReport(report URLTestReport) URLTestReport {
+	report.Results = append([]URLTestResult(nil), report.Results...)
+	return report
 }

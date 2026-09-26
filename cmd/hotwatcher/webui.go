@@ -322,15 +322,16 @@ func (w *webUI) handler() http.Handler {
 		status, statusErr, system := w.health.snapshot()
 		keys, keysErr := w.engine.KeysSnapshot()
 		sites, sitesErr := w.engine.URLTestSites()
+		economy, modeErr := w.config.EconomyChecks()
 		last, lastErr := w.engine.LastURLTest()
 		recovery, recoveryErr := w.engine.RecoveryStatus()
 		warnings := []string{}
-		for _, err := range []error{statusErr, keysErr, sitesErr, lastErr, recoveryErr} {
+		for _, err := range []error{statusErr, keysErr, sitesErr, modeErr, lastErr, recoveryErr} {
 			if err != nil {
 				warnings = append(warnings, err.Error())
 			}
 		}
-		jsonResponse(out, 200, map[string]any{"version": hw.Version, "status": status, "system": system, "keys": keys, "sites": sites, "last_test": last, "recovery": recovery, "warnings": warnings})
+		jsonResponse(out, 200, map[string]any{"version": hw.Version, "status": status, "system": system, "keys": keys, "sites": sites, "economy_checks": economy, "last_test": last, "recovery": recovery, "warnings": warnings})
 	})
 	mux.HandleFunc("GET /api/job", func(out http.ResponseWriter, r *http.Request) {
 		if _, ok := w.session(r); !ok {
@@ -404,6 +405,25 @@ func (w *webUI) handler() http.Handler {
 			return
 		}
 		jsonResponse(out, 200, map[string]any{"sites": sites})
+	})
+	mux.HandleFunc("PUT /api/probe-mode", func(out http.ResponseWriter, r *http.Request) {
+		session, ok := w.session(r)
+		if !ok || !w.csrfOK(r, session) {
+			apiError(out, 403, "доступ запрещён")
+			return
+		}
+		var input struct {
+			EconomyChecks *bool `json:"economy_checks"`
+		}
+		if err := decodeRequest(r, &input); err != nil || input.EconomyChecks == nil {
+			apiError(out, 400, "укажите режим проверки")
+			return
+		}
+		if err := hw.WithLock(w.config, func() error { return w.engine.SetEconomyChecks(*input.EconomyChecks) }); err != nil {
+			apiError(out, 409, err.Error())
+			return
+		}
+		jsonResponse(out, 200, map[string]bool{"economy_checks": *input.EconomyChecks})
 	})
 	mux.HandleFunc("POST /api/emergency", func(out http.ResponseWriter, r *http.Request) {
 		session, ok := w.session(r)
@@ -512,7 +532,20 @@ func (w *webUI) runAction(id uint64, action, tag string) {
 			case "forget-emergency":
 				return w.engine.RemoveEmergency()
 			case "url-test":
-				r, err := w.engine.URLTestKey(tag)
+				r, err := w.engine.URLTestKeyWithProgress(tag, func(snapshot hw.URLTestReport) {
+					w.mu.Lock()
+					if w.job.ID == id {
+						w.job.Report = &snapshot
+						completed := 0
+						for _, item := range snapshot.Results {
+							if item.Completed {
+								completed++
+							}
+						}
+						w.job.Message = fmt.Sprintf("URL Test: проверено %d из %d сайтов", completed, len(snapshot.Results))
+					}
+					w.mu.Unlock()
+				})
 				report = &r
 				return err
 			}

@@ -9,6 +9,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -183,6 +185,82 @@ func lock(dir string) (func(), error) {
 		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 		_ = f.Close()
 	}, nil
+}
+
+// LockDaemon is held for the entire daemon lifetime. The operation lock above
+// is intentionally short lived and cannot prevent two background daemons.
+func LockDaemon(dir string) (func(), error) {
+	if err := privateDir(dir); err != nil {
+		return nil, err
+	}
+	path := filepath.Join(dir, "daemon.lock")
+	if info, err := os.Lstat(path); err == nil {
+		if !info.Mode().IsRegular() {
+			return nil, errors.New("unsafe daemon lock path")
+		}
+	} else if !os.IsNotExist(err) {
+		return nil, err
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return nil, err
+	}
+	if err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		_ = f.Close()
+		if errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN) {
+			return nil, errors.New("another Hot Watcher daemon is already running")
+		}
+		return nil, fmt.Errorf("Hot Watcher daemon lock failed: %w", err)
+	}
+	other, err := otherDaemonPIDs()
+	if err != nil || len(other) > 0 {
+		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		_ = f.Close()
+		if err != nil {
+			return nil, err
+		}
+		return nil, fmt.Errorf("another Hot Watcher daemon is already running (PID %d)", other[0])
+	}
+	return func() {
+		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		_ = f.Close()
+	}, nil
+}
+
+// Older releases did not hold daemon.lock. Detect their orphaned processes
+// before the new daemon can start and leave their old Web UI on port 8787.
+func otherDaemonPIDs() ([]int, error) {
+	self, err := os.Executable()
+	if err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return nil, err
+	}
+	var pids []int
+	for _, entry := range entries {
+		pid, err := strconv.Atoi(entry.Name())
+		if err != nil || pid == os.Getpid() {
+			continue
+		}
+		base := filepath.Join("/proc", entry.Name())
+		exe, err := os.Readlink(filepath.Join(base, "exe"))
+		if err != nil || (exe != self && exe != self+" (deleted)") {
+			continue
+		}
+		args, err := os.ReadFile(filepath.Join(base, "cmdline"))
+		if err != nil {
+			continue // The process may have exited during the scan.
+		}
+		for _, arg := range strings.Split(string(args), "\x00") {
+			if arg == "daemon" {
+				pids = append(pids, pid)
+				break
+			}
+		}
+	}
+	return pids, nil
 }
 
 // CurrentLock reports whether a process really holds the kernel lock. A

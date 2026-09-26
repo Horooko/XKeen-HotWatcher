@@ -5,17 +5,24 @@
   let current = null;
   let sitesDirty = false;
   let activeJob = 0;
+  let liveReport = null;
+  let lastReport = null;
   let refreshing = false;
   let systemRefreshing = false;
   const pageTitles = { overview: "Обзор подключения", keys: "Управление ключами", "url-test": "Проверка сайтов", system: "XKeen и Xray", updates: "Обновления" };
 
   async function api(path, options = {}) {
-    const response = await fetch(path, {
-      credentials: "same-origin",
-      cache: "no-store",
-      ...options,
-      headers: { ...(options.body ? { "Content-Type": "application/json" } : {}), ...(csrf ? { "X-HW-CSRF": csrf } : {}), ...(options.headers || {}) }
-    });
+    let response;
+    try {
+      response = await fetch(path, {
+        credentials: "same-origin",
+        cache: "no-store",
+        ...options,
+        headers: { ...(options.body ? { "Content-Type": "application/json" } : {}), ...(csrf ? { "X-HW-CSRF": csrf } : {}), ...(options.headers || {}) }
+      });
+    } catch (_) {
+      throw new Error("Нет связи с Hot Watcher на роутере. Проверьте сеть и повторите.");
+    }
     let data;
     try { data = await response.json(); } catch (_) { throw new Error("Сервер вернул неверный ответ"); }
     if (!response.ok) {
@@ -119,10 +126,12 @@
       const actions = make("td", "actions-col");
       const group = make("div", "inline-actions");
       if (key.Applied) {
-        const test = make("button", "row-button", "URL Test");
-        test.type = "button";
-        test.addEventListener("click", () => startAction("url-test", key.Tag));
-        group.append(test);
+        if (key.Selected || current?.economy_checks === false) {
+          const test = make("button", "row-button", "URL Test");
+          test.type = "button";
+          test.addEventListener("click", () => startAction("url-test", key.Tag));
+          group.append(test);
+        }
         if (!key.Selected) {
           const select = make("button", "row-button select", "Выбрать");
           select.type = "button";
@@ -190,28 +199,56 @@
     } catch (error) { showBanner("Не удалось сохранить", error.message, "failed"); }
   }
 
-  function renderResults(report) {
+  function renderResults(report, running = false) {
     const list = $("resultList");
     list.replaceChildren();
     if (!report || !Array.isArray(report.results) || !report.results.length) {
       list.append(make("div", "result-placeholder", "Запустите URL Test, чтобы увидеть результат по каждому сайту."));
       text("resultTime", "Результата ещё нет");
+      text("resultSummary", "Запустите проверку, чтобы увидеть доступность каждого сайта.");
       badge($("resultBadge"), "—", "neutral");
+      $("downloadReportButton").disabled = true;
       return;
     }
     text("resultTime", dateLabel(report.time));
-    badge($("resultBadge"), report.passed ? "Все открылись" : "Есть ошибки", report.passed ? "good" : "bad");
+    const completed = (report.progress_known || running) ? report.results.filter((item) => item.completed).length : report.results.length;
+    const opened = report.results.filter((item) => item.ok).length;
+    const route = report.mode === "main_xray" ? " · основной Xray" : report.mode === "isolated" ? " · отдельный Xray" : "";
+    text("resultSummary", "Проверено " + completed + " из " + report.results.length + " · открывается " + opened + " · не открывается " + (completed - opened) + route);
+    badge($("resultBadge"), running ? "Идёт проверка" : completed < report.results.length ? "Прервано" : report.passed ? "Все открылись" : "Есть ошибки", running || completed < report.results.length ? "neutral" : report.passed ? "good" : "bad");
+    if (!running) lastReport = report;
+    $("downloadReportButton").disabled = running || !lastReport;
     for (const item of report.results) {
       const row = make("div", "result-row" + (item.ok ? " ok" : ""));
       row.append(make("span", "result-dot"), make("span", "result-site", siteName(item.site)));
-      const detail = item.ok ? Math.round(item.latency_ms || 0) + " мс" : item.status ? "HTTP " + item.status : item.reason || "Ошибка";
+      const pending = (running || report.progress_known) && !item.completed;
+      const detail = pending ? running ? "Ожидает проверки" : "Не проверено" : item.ok ? "Открывается · " + Math.round(item.latency_ms || 0) + " мс" : "Не открывается · " + (item.reason || (item.status ? "HTTP " + item.status : "Ошибка")) + (item.reason && item.status ? " · HTTP " + item.status : "");
       row.append(make("span", "result-detail", detail));
       list.append(row);
     }
   }
 
+  function downloadReport() {
+    if (!lastReport?.results?.length) return;
+    const opened = lastReport.results.filter((item) => item.ok).length;
+    const completed = lastReport.progress_known ? lastReport.results.filter((item) => item.completed).length : lastReport.results.length;
+    const lines = ["Hot Watcher — отчёт URL Test", "Время: " + new Date(lastReport.time).toLocaleString("ru-RU"), "Ключ: " + (lastReport.tag || "—"), "Режим: " + (lastReport.mode === "main_xray" ? "основной Xray" : lastReport.mode === "isolated" ? "отдельный Xray" : "не указан"), "Проверено: " + completed + " из " + lastReport.results.length, "Открывается: " + opened, ""];
+    for (const item of lastReport.results) {
+      const outcome = lastReport.progress_known && !item.completed ? "Не проверено" : item.ok ? "Открывается" : "Не открывается";
+      lines.push(outcome + " | " + item.site + " | " + (item.status ? "HTTP " + item.status : item.reason || "") + (item.latency_ms != null ? " | " + Math.round(item.latency_ms) + " мс" : ""));
+    }
+    const link = document.createElement("a");
+    const fileURL = URL.createObjectURL(new Blob([lines.join("\n") + "\n"], { type: "text/plain;charset=utf-8" }));
+    link.href = fileURL;
+    link.download = "hotwatcher-url-test.txt";
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(fileURL), 1000);
+  }
+
   function renderOverview(data) {
     current = data;
+    $("economyChecks").checked = data.economy_checks !== false;
+    text("probeModeNote", data.economy_checks === false ? "Отдельный Xray проверяет выбранный ключ; URL Test запускается только для одного кандидата." : "URL Test проверяет выбранный ключ один раз через основной Xray. При неудаче текущий ключ сохраняется.");
     const status = data.status || {};
     const keys = data.keys || {};
     const list = inventoryKeys(keys);
@@ -251,7 +288,7 @@
     $("forgetEmergencyButton").disabled = !emergency;
     renderKeys(keys);
     renderSites(data.sites || []);
-    renderResults(data.last_test);
+    renderResults(liveReport || data.last_test, !!liveReport);
     const warnings = Array.isArray(data.warnings) ? [...data.warnings] : [];
     if (status.api_error) warnings.push("HandlerService: " + status.api_error);
     if (status.balancer_api_error) warnings.push("RoutingService: " + status.balancer_api_error);
@@ -309,6 +346,7 @@
     try {
       const job = await api("/api/action", { method: "POST", body: JSON.stringify({ action, tag }) });
       activeJob = job.id;
+      if (action === "url-test") { liveReport = null; location.hash = "#url-test"; navigate(); }
       showBanner(names[action] || "Операция", action === "update-install" ? "Установщик запущен. Панель может ненадолго перезапуститься." : "Выполняется…");
       await pollJob();
     } catch (error) { showBanner(names[action] || "Операция", error.message, "failed"); }
@@ -318,8 +356,14 @@
     try {
       const job = await api("/api/job");
       if (job.id !== activeJob) return;
-      if (job.state === "running") { setTimeout(pollJob, 1200); return; }
+      if (job.state === "running") {
+        showBanner(job.action === "url-test" ? "URL Test" : "Операция выполняется", job.message);
+        if (job.action === "url-test" && job.report?.results?.length) { liveReport = job.report; renderResults(liveReport, true); }
+        setTimeout(pollJob, 1200);
+        return;
+      }
       activeJob = 0;
+      liveReport = null;
       showBanner(job.state === "succeeded" ? "Операция завершена" : "Операция не выполнена", job.message, job.state);
       if (job.report?.results?.length) renderResults(job.report);
       await refresh();
@@ -346,6 +390,19 @@
       await refreshUpdate();
     } catch (error) { showBanner("Политика обновлений", error.message, "failed"); }
   }
+  async function saveProbeMode() {
+    const checkbox = $("economyChecks");
+    const enabled = checkbox.checked;
+    checkbox.disabled = true;
+    try {
+      await api("/api/probe-mode", { method: "PUT", body: JSON.stringify({ economy_checks: enabled }) });
+      showBanner("Режим проверки", enabled ? "Экономная проверка включена." : "Проверка отдельным Xray включена.", "succeeded");
+      await refresh();
+    } catch (error) {
+      checkbox.checked = !enabled;
+      showBanner("Режим проверки", error.message, "failed");
+    } finally { checkbox.disabled = false; }
+  }
 
   $("loginForm").addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -362,6 +419,8 @@
   $("syncButton").addEventListener("click", () => startAction("sync"));
   $("checkButton").addEventListener("click", () => startAction("check-key"));
   $("testSelectedButton").addEventListener("click", () => startAction("url-test"));
+  $("economyChecks").addEventListener("change", saveProbeMode);
+  $("downloadReportButton").addEventListener("click", downloadReport);
   $("pinSelectedButton").addEventListener("click", () => { const key = inventoryKeys(current?.keys).find((item) => item.Selected); if (key) startAction("pin", key.Tag); });
   $("autoButton").addEventListener("click", () => startAction("auto"));
   $("emergencyButton").addEventListener("click", startEmergency);

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -56,6 +57,20 @@ func dnsProbeConfig(dns map[string]json.RawMessage, outbound map[string]any, por
 	return encode(config), nil
 }
 
+func dnsBypassesRouting(dns map[string]json.RawMessage) bool {
+	var servers []string
+	if json.Unmarshal(dns["servers"], &servers) != nil || len(servers) == 0 {
+		return false
+	}
+	for _, server := range servers {
+		server = strings.ToLower(strings.TrimSpace(server))
+		if server != "localhost" && !strings.HasPrefix(server, "https+local://") && !strings.HasPrefix(server, "tcp+local://") && !strings.HasPrefix(server, "quic+local://") {
+			return false
+		}
+	}
+	return true
+}
+
 func (e *Engine) probeDNSRoute(dns map[string]json.RawMessage, outbound map[string]any) (time.Duration, error) {
 	if err := privateDir(e.C.StateDir); err != nil {
 		return 0, err
@@ -87,18 +102,11 @@ func (e *Engine) probeDNSRoute(dns map[string]json.RawMessage, outbound map[stri
 	cmd := exec.CommandContext(ctx, e.C.XrayBinary, "run", "-config", path)
 	cmd.Env = append(isolatedEnv(), "XRAY_LOCATION_ASSET="+e.C.AssetDir)
 	cmd.Stdout, cmd.Stderr = io.Discard, io.Discard
-	if err := cmd.Start(); err != nil {
-		return 0, errors.New("не удалось запустить изолированный Xray для DNS-пробы")
+	probe, err := startAuxiliaryXray(cmd)
+	if err != nil {
+		return 0, fmt.Errorf("не удалось запустить изолированный Xray для DNS-пробы: %w", err)
 	}
-	done := make(chan struct{})
-	go func() { _ = cmd.Wait(); close(done) }()
-	defer func() {
-		_ = cmd.Process.Kill()
-		select {
-		case <-done:
-		case <-time.After(3 * time.Second):
-		}
-	}()
+	defer probe.stop()
 	query, id, err := dnsQuestion()
 	if err != nil {
 		return 0, err
@@ -107,8 +115,8 @@ func (e *Engine) probeDNSRoute(dns map[string]json.RawMessage, outbound map[stri
 	started := time.Now()
 	for ctx.Err() == nil {
 		select {
-		case <-done:
-			return 0, errors.New("изолированный Xray завершился до ответа DNS")
+		case <-probe.done:
+			return 0, probe.unexpectedExit("изолированный Xray завершился до ответа DNS")
 		default:
 		}
 		conn, err := net.DialTimeout("udp4", address, time.Second)
@@ -151,6 +159,10 @@ func (e *Engine) DNSVerify() (DNSVerification, error) {
 		result.Direct.Success, result.Direct.LatencyMS = true, &ms
 	} else {
 		result.Direct.Reason = err.Error()
+	}
+	if dnsBypassesRouting(src.dns) {
+		result.SelectedVLESS.Reason = "локальный DNS-режим обходит routing и выбранный VLESS; этот маршрут не проверяется"
+		return result, nil
 	}
 	s, err := e.state()
 	if err != nil {

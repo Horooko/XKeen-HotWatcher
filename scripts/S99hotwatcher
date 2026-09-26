@@ -24,6 +24,12 @@ same_daemon() {
  case "$EXE" in "$BIN"|"$BIN (deleted)") ;; *) return 1 ;; esac
  tr '\000' '\n' < "/proc/$1/cmdline" | grep -q '^daemon$'
 }
+daemon_pids() {
+ for PROC in /proc/[0-9]*; do
+  CANDIDATE=${PROC##*/}
+  if same_daemon "$CANDIDATE"; then printf '%s\n' "$CANDIDATE"; fi
+ done
+}
 start() {
  if [ -e /opt/var/lib/hotwatcher-updater/pending-update.json ] && [ -z "${HOTWATCHER_UPDATE_ID:-}" ]; then echo 'Pending software update requires recovery; start deferred.' >&2; return 1; fi
  if [ -e /opt/var/lib/hotwatcher-updater/maintenance.json ]; then
@@ -31,12 +37,25 @@ start() {
   grep -q "${HOTWATCHER_UPDATE_ID}" /opt/var/lib/hotwatcher-updater/maintenance.json || return 1
  fi
  [ -f "$ENABLED" ] || { echo 'Hot Watcher disabled (no enabled marker).'; return 0; }
- if running; then echo "Hot Watcher already running: $PID"; return 0; fi
+ DAEMONS=$(daemon_pids)
+ set -- $DAEMONS
+ if [ "$#" -gt 1 ]; then
+  echo "Multiple Hot Watcher daemons found ($DAEMONS); start deferred. Stop the old processes before restarting." >&2
+  return 1
+ fi
+ if running; then
+  if [ "$#" -ne 1 ] || [ "$1" != "$PID" ] || [ "$(readlink "/proc/$PID/exe" 2>/dev/null)" != "$BIN" ]; then
+   echo "Hot Watcher PID $PID is stale or another daemon exists; start deferred." >&2
+   return 1
+  fi
+  echo "Hot Watcher already running: $PID"
+  return 0
+ fi
  if [ -r "$PIDFILE" ]; then
   PID=$(cat "$PIDFILE")
   case "$PID" in ''|*[!0-9]*) echo 'Unsafe PID file; start deferred.' >&2; return 1;; esac
   if kill -0 "$PID" 2>/dev/null; then
-   if same_daemon "$PID"; then
+   if same_daemon "$PID" && [ "$#" -eq 1 ] && [ "$1" = "$PID" ] && [ "$(readlink "/proc/$PID/exe" 2>/dev/null)" = "$BIN" ]; then
     awk '{print $22}' "/proc/$PID/stat" > "$STARTFILE"
     echo "Hot Watcher already running: $PID (start marker repaired)."
     return 0
@@ -46,13 +65,27 @@ start() {
   fi
   rm -f "$PIDFILE" "$STARTFILE"
  fi
+ if [ "$#" -eq 1 ]; then
+  echo "Untracked Hot Watcher daemon $1 found; start deferred. Stop it before restarting." >&2
+  return 1
+ fi
  mkdir -p /opt/var/run
  umask 077
  "$BIN" --config "$CONF" daemon >/dev/null 2>&1 &
- PID=$!
- printf '%s\n' "$PID" > "$PIDFILE"
- awk '{print $22}' "/proc/$PID/stat" > "$STARTFILE"
- echo "Hot Watcher started: $PID. Check hotwatcher status and events.jsonl."
+ LAUNCHED=$!
+ printf '%s\n' "$LAUNCHED" > "$PIDFILE"
+ awk '{print $22}' "/proc/$LAUNCHED/stat" > "$STARTFILE"
+ N=0
+ while [ "$N" -lt 3 ]; do
+  sleep 1
+  if running; then echo "Hot Watcher started: $PID. Check hotwatcher status and events.jsonl."; return 0; fi
+  N=$((N+1))
+ done
+ if [ "$(cat "$PIDFILE" 2>/dev/null)" = "$LAUNCHED" ] && ! kill -0 "$LAUNCHED" 2>/dev/null; then
+  rm -f "$PIDFILE" "$STARTFILE"
+ fi
+ echo 'Hot Watcher did not stay running; inspect events.jsonl before retrying.' >&2
+ return 1
 }
 stop() {
  if ! running; then

@@ -14,16 +14,19 @@ import (
 type URLTestResult struct {
 	Site      string   `json:"site"`
 	OK        bool     `json:"ok"`
+	Completed bool     `json:"completed,omitempty"`
 	Status    int      `json:"status,omitempty"`
 	LatencyMS *float64 `json:"latency_ms,omitempty"`
 	Reason    string   `json:"reason,omitempty"`
 }
 
 type URLTestReport struct {
-	Tag     string          `json:"tag"`
-	Time    time.Time       `json:"time"`
-	Passed  bool            `json:"passed"`
-	Results []URLTestResult `json:"results"`
+	Tag           string          `json:"tag"`
+	Mode          string          `json:"mode,omitempty"`
+	Time          time.Time       `json:"time"`
+	Passed        bool            `json:"passed"`
+	ProgressKnown bool            `json:"progress_known,omitempty"`
+	Results       []URLTestResult `json:"results"`
 }
 
 type urlTestSettings struct {
@@ -118,11 +121,23 @@ func (e *Engine) LastURLTest() (*URLTestReport, error) {
 }
 
 func (e *Engine) urlTestNode(node Node) (URLTestReport, error) {
+	return e.urlTestNodeProgress(node, nil)
+}
+
+func (e *Engine) urlTestNodeProgress(node Node, progress func(URLTestReport)) (URLTestReport, error) {
 	sites, err := e.URLTestSites()
 	if err != nil {
 		return URLTestReport{}, err
 	}
-	report, probeErr := e.R.URLTest(node, sites)
+	var report URLTestReport
+	var probeErr error
+	if runtime, ok := e.R.(interface {
+		URLTestWithProgress(Node, []string, func(URLTestReport)) (URLTestReport, error)
+	}); ok && progress != nil {
+		report, probeErr = runtime.URLTestWithProgress(node, sites, progress)
+	} else {
+		report, probeErr = e.R.URLTest(node, sites)
+	}
 	report.Tag, report.Time = node.Tag, e.Now()
 	if len(report.Results) > 0 {
 		if writeErr := atomicWrite(e.urlTestReportPath(), encode(report), 0600); writeErr != nil {
@@ -140,6 +155,12 @@ func (e *Engine) urlTestNode(node Node) (URLTestReport, error) {
 
 // URLTestKey tests a saved key without switching the production balancer.
 func (e *Engine) URLTestKey(tag string) (URLTestReport, error) {
+	return e.URLTestKeyWithProgress(tag, nil)
+}
+
+// URLTestKeyWithProgress publishes immutable snapshots as each site finishes.
+// The callback must return promptly; the final report is saved by urlTestNode.
+func (e *Engine) URLTestKeyWithProgress(tag string, progress func(URLTestReport)) (URLTestReport, error) {
 	s, err := e.state()
 	if err != nil {
 		return URLTestReport{}, err
@@ -150,9 +171,25 @@ func (e *Engine) URLTestKey(tag string) (URLTestReport, error) {
 	if tag == "" {
 		tag = s.Selected
 	}
+	economy, err := e.C.EconomyChecks()
+	if err != nil {
+		return URLTestReport{}, err
+	}
+	if economy && tag != s.Selected {
+		return URLTestReport{}, errors.New("экономная проверка использует только выбранный ключ; сначала выберите его")
+	}
+	if economy {
+		balance, err := e.R.Balance()
+		if err != nil {
+			return URLTestReport{}, fmt.Errorf("не удалось проверить активный маршрут Xray: %w", err)
+		}
+		if balance.Override != s.Selected {
+			return URLTestReport{}, errors.New("активный маршрут Xray расходится с выбранным ключом; выполните reconcile")
+		}
+	}
 	node, ok := findNode(s.Active, tag)
 	if !ok {
 		return URLTestReport{}, errors.New("ключ не найден в применённом списке")
 	}
-	return e.urlTestNode(node)
+	return e.urlTestNodeProgress(node, progress)
 }

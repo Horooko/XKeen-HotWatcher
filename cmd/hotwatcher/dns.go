@@ -25,7 +25,7 @@ func dnsCommand(c hw.Config, engine *hw.Engine, args []string) error {
 		return err
 	}
 	if len(args) == 1 && args[0] == "verify" {
-		fmt.Println("Проверяю DNS через временный Xray: напрямую и через выбранный ключ…")
+		fmt.Println("Проверяю DNS через временный Xray с учётом режима маршрутизации…")
 		result, err := engine.DNSVerify()
 		if result.ConfigFile != "" {
 			printJSON(result)

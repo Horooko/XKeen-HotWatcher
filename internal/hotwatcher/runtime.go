@@ -60,9 +60,22 @@ func (x Xray) run(input []byte, args ...string) ([]byte, error) {
 	var out cappedBuffer
 	cmd.Stdout = &out
 	cmd.Stderr = io.Discard
-	if e := cmd.Run(); e != nil {
+	var commandErr error
+	if len(args) > 0 && args[0] == "run" {
+		probe, startErr := startAuxiliaryXray(cmd)
+		if startErr != nil {
+			return nil, startErr
+		}
+		commandErr = probe.result("Xray command failed; raw output suppressed to protect credentials")
+	} else {
+		commandErr = cmd.Run()
+	}
+	if commandErr != nil {
 		if ctx.Err() != nil {
 			return nil, errors.New("Xray command timeout")
+		}
+		if errors.Is(commandErr, errAuxiliaryMemory) {
+			return nil, commandErr
 		}
 		return nil, errors.New("Xray command failed; raw output suppressed to protect credentials")
 	}
@@ -239,6 +252,57 @@ func (x Xray) Probe(n Node) error {
 }
 
 func (x Xray) ProbeLatency(n Node) (time.Duration, error) {
+	economy, err := x.C.EconomyChecks()
+	if err != nil {
+		return 0, err
+	}
+	if economy {
+		return x.probeLatencyLive(n)
+	}
+	return x.probeLatencyIsolated(n)
+}
+
+func (x Xray) probeLatencyLive(n Node) (time.Duration, error) {
+	var latency time.Duration
+	err := x.withLiveProbe(n, func(proxy, control *url.URL) error {
+		tc, err := tlsConfig(x.C)
+		if err != nil {
+			return err
+		}
+		transport := &http.Transport{Proxy: http.ProxyURL(proxy), TLSClientConfig: tc, DisableKeepAlives: true}
+		defer transport.CloseIdleConnections()
+		controlTransport := &http.Transport{Proxy: http.ProxyURL(control), TLSClientConfig: tc, DisableKeepAlives: true}
+		defer controlTransport.CloseIdleConnections()
+		client := &http.Client{Transport: transport, Timeout: time.Duration(x.C.ProbeTimeoutSeconds) * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("probe redirect refused") }}
+		controlClient := &http.Client{Transport: controlTransport, Timeout: 3 * time.Second, CheckRedirect: client.CheckRedirect}
+		for _, target := range x.C.ProbeURLs {
+			req, err := http.NewRequest("GET", target, nil)
+			if err != nil {
+				continue
+			}
+			req.Header.Set("User-Agent", "HotWatcher-Probe/"+Version)
+			started := time.Now()
+			res, err := client.Do(req)
+			if err != nil {
+				continue
+			}
+			io.Copy(io.Discard, io.LimitReader(res.Body, 4096))
+			res.Body.Close()
+			if res.StatusCode == 204 {
+				measured := time.Since(started)
+				if controlRouteOpens(controlClient, req) {
+					return errors.New("маршрутизация основного Xray обходит проверяемый ключ")
+				}
+				latency = measured
+				return nil
+			}
+		}
+		return errors.New("ключ не открыл HTTPS-адрес проверки со статусом 204")
+	})
+	return latency, err
+}
+
+func (x Xray) probeLatencyIsolated(n Node) (time.Duration, error) {
 	ln, e := net.Listen("tcp", "127.0.0.1:0")
 	if e != nil {
 		return 0, errors.New("cannot reserve loopback probe port")
@@ -262,24 +326,17 @@ func (x Xray) ProbeLatency(n Node) (time.Duration, error) {
 	cmd.Env = append(isolatedEnv(), "XRAY_LOCATION_ASSET="+x.C.AssetDir)
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
-	if e = cmd.Start(); e != nil {
-		return 0, errors.New("cannot start isolated candidate probe")
+	probe, e := startAuxiliaryXray(cmd)
+	if e != nil {
+		return 0, fmt.Errorf("cannot start isolated candidate probe: %w", e)
 	}
-	done := make(chan struct{})
-	go func() { cmd.Wait(); close(done) }()
-	defer func() {
-		cmd.Process.Kill()
-		select {
-		case <-done:
-		case <-time.After(3 * time.Second):
-		}
-	}()
+	defer probe.stop()
 	address := fmt.Sprintf("127.0.0.1:%d", port)
 	ready := false
 	for i := 0; i < 50; i++ {
 		select {
-		case <-done:
-			return 0, errors.New("isolated candidate probe exited at startup")
+		case <-probe.done:
+			return 0, probe.unexpectedExit("isolated candidate probe exited at startup")
 		default:
 		}
 		conn, err := net.DialTimeout("tcp", address, 100*time.Millisecond)
@@ -316,12 +373,17 @@ func (x Xray) ProbeLatency(n Node) (time.Duration, error) {
 		res.Body.Close()
 		if res.StatusCode == 204 {
 			select {
-			case <-done:
-				return 0, errors.New("candidate probe exited unexpectedly")
+			case <-probe.done:
+				return 0, probe.unexpectedExit("candidate probe exited unexpectedly")
 			default:
 				return time.Since(started), nil
 			}
 		}
+	}
+	select {
+	case <-probe.done:
+		return 0, probe.unexpectedExit("isolated candidate probe exited during network checks")
+	default:
 	}
 	return 0, errors.New("candidate could not reach any HTTPS probe endpoint with status 204")
 }

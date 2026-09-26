@@ -97,7 +97,8 @@
 
         <div id="page-url-test" class="page" data-page="url-test" hidden>
         <section id="url-test" class="section panel-section">
-          <div class="section-heading"><div><div class="eyebrow">02 / ПРОВЕРКА САЙТОВ</div><h2>URL Test</h2><p>Перед сменой ключа Hot Watcher открывает каждый сайт из этого списка через временный Xray.</p></div><button id="testSelectedButton" class="button secondary">Проверить выбранный ключ <span aria-hidden="true">↗</span></button></div>
+          <div class="section-heading"><div><div class="eyebrow">02 / ПРОВЕРКА САЙТОВ</div><h2>URL Test</h2><p>Проверка выбранного ключа открывает каждый сайт из списка и показывает результат.</p></div><button id="testSelectedButton" class="button secondary">Проверить выбранный ключ <span aria-hidden="true">↗</span></button></div>
+          <div class="panel probe-mode-panel"><label class="probe-mode-label" for="economyChecks"><input id="economyChecks" type="checkbox" checked><span><strong>Экономная проверка</strong><small>Использовать основной Xray для URL Test и проверки задержки. Включено по умолчанию; временный маршрут удаляется после проверки.</small></span></label><p id="probeModeNote" class="site-footnote">URL Test проверяет выбранный ключ один раз. При неудаче текущий ключ сохраняется.</p></div>
           <div class="url-grid">
             <div class="panel site-panel">
               <div class="panel-head"><div><strong>Обязательные сайты</strong><span>Изменения действуют сразу после сохранения</span></div><span id="siteCount" class="mini-count">0 / 12</span></div>
@@ -105,7 +106,7 @@
               <div class="site-actions"><button id="addSiteButton" class="text-button add-site">＋ Добавить сайт</button><button id="saveSitesButton" class="button primary compact">Сохранить список</button></div>
               <p class="site-footnote">От 1 до 12 публичных HTTPS-доменов. Сайт должен вернуть успешный HTTP-ответ.</p>
             </div>
-            <div class="panel result-panel"><div class="panel-head"><div><strong>Последняя проверка</strong><span id="resultTime">Результата ещё нет</span></div><span id="resultBadge" class="status-badge neutral">—</span></div><div id="resultList" class="result-list"><div class="result-placeholder">Запустите URL Test, чтобы увидеть результат по каждому сайту.</div></div></div>
+            <div class="panel result-panel"><div class="panel-head"><div><strong>Отчёт URL Test</strong><span id="resultTime">Результата ещё нет</span></div><span id="resultBadge" class="status-badge neutral">—</span></div><p id="resultSummary" class="site-footnote">Запустите проверку, чтобы увидеть доступность каждого сайта.</p><div id="resultList" class="result-list"><div class="result-placeholder">Запустите URL Test, чтобы увидеть результат по каждому сайту.</div></div><button id="downloadReportButton" class="text-button" type="button" disabled>Скачать отчёт .txt</button></div>
           </div>
         </section>
         </div>

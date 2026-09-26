@@ -58,7 +58,64 @@ func validDNSAnswer(body []byte, id uint16) bool {
 		return false
 	}
 	flags := binary.BigEndian.Uint16(body[2:4])
-	return flags&0x8000 != 0 && flags&0x000f == 0 && binary.BigEndian.Uint16(body[4:6]) == 1 && binary.BigEndian.Uint16(body[6:8]) > 0
+	if flags&0x8000 == 0 || flags&0x7800 != 0 || flags&0x0200 != 0 || flags&0x000f != 0 || binary.BigEndian.Uint16(body[4:6]) != 1 {
+		return false
+	}
+	answers := int(binary.BigEndian.Uint16(body[6:8]))
+	if answers == 0 {
+		return false
+	}
+	offset, ok := skipDNSName(body, 12)
+	if !ok || offset+4 > len(body) || binary.BigEndian.Uint16(body[offset:offset+2]) != 1 || binary.BigEndian.Uint16(body[offset+2:offset+4]) != 1 {
+		return false
+	}
+	offset += 4
+	foundPublicA := false
+	for i := 0; i < answers; i++ {
+		offset, ok = skipDNSName(body, offset)
+		if !ok || offset+10 > len(body) {
+			return false
+		}
+		typeCode := binary.BigEndian.Uint16(body[offset : offset+2])
+		classCode := binary.BigEndian.Uint16(body[offset+2 : offset+4])
+		length := int(binary.BigEndian.Uint16(body[offset+8 : offset+10]))
+		offset += 10
+		if offset+length > len(body) {
+			return false
+		}
+		if typeCode == 1 && classCode == 1 && length == 4 {
+			ip := net.IP(body[offset : offset+length])
+			if ip.IsGlobalUnicast() && !ip.IsPrivate() {
+				foundPublicA = true
+			}
+		}
+		offset += length
+	}
+	return foundPublicA
+}
+
+func skipDNSName(body []byte, offset int) (int, bool) {
+	for labels := 0; labels < 128; labels++ {
+		if offset >= len(body) {
+			return 0, false
+		}
+		length := int(body[offset])
+		if length&0xc0 == 0xc0 {
+			if offset+1 >= len(body) || ((length&0x3f)<<8|int(body[offset+1])) >= len(body) {
+				return 0, false
+			}
+			return offset + 2, true
+		}
+		if length&0xc0 != 0 || length > 63 || offset+1+length > len(body) {
+			return 0, false
+		}
+		offset++
+		if length == 0 {
+			return offset, true
+		}
+		offset += length
+	}
+	return 0, false
 }
 
 func probeDoH(c Config, candidate dnsCandidate) (time.Duration, error) {
