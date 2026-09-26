@@ -68,7 +68,7 @@ func TestDNSPreparePreservesSettingsAndRejectsComplexRules(t *testing.T) {
 			t.Fatalf("missing %s", key)
 		}
 	}
-	if !strings.Contains(string(dns["hosts"]), "service.example") || string(dns["tag"]) != `"dns-via-proxy"` || string(dns["enableParallelQuery"]) != "true" {
+	if !strings.Contains(string(dns["hosts"]), "service.example") || string(dns["tag"]) != `"dns-via-proxy"` || string(dns["queryStrategy"]) != `"UseIPv4"` || string(dns["enableParallelQuery"]) != "true" {
 		t.Fatalf("DNS settings changed unexpectedly: %s", dns)
 	}
 	if len(root["log"]) == 0 {
@@ -86,6 +86,27 @@ func TestDNSPreparePreservesSettingsAndRejectsComplexRules(t *testing.T) {
 	}
 }
 
+func TestDNSPrepareUsesExplicitXrayDefaultOnEmptyFragment(t *testing.T) {
+	c := dnsTestConfig(t)
+	src, err := findDNSSource(c)
+	if err != nil || !src.created {
+		t.Fatalf("expected new DNS fragment: %+v, %v", src, err)
+	}
+	prepared, _, err := prepareDNS(src, dnsCandidates)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var root struct {
+		DNS struct {
+			QueryStrategy string   `json:"queryStrategy"`
+			Servers       []string `json:"servers"`
+		} `json:"dns"`
+	}
+	if err := json.Unmarshal(prepared, &root); err != nil || root.DNS.QueryStrategy != "UseIP" || len(root.DNS.Servers) != 2 {
+		t.Fatalf("unexpected generated DNS: %s, %v", prepared, err)
+	}
+}
+
 func TestDNSFindRefusesAmbiguousSources(t *testing.T) {
 	c := dnsTestConfig(t)
 	for _, name := range []string{"02_dns.json", "03_dns.json"} {
@@ -95,6 +116,31 @@ func TestDNSFindRefusesAmbiguousSources(t *testing.T) {
 	}
 	if _, err := findDNSSource(c); err == nil {
 		t.Fatal("ambiguous DNS sources accepted")
+	}
+}
+
+func TestDNSAutoRefusesRoutedDNSTagFromXKeenExample(t *testing.T) {
+	c := dnsTestConfig(t)
+	dnsPath := filepath.Join(c.ConfigDir, "02_dns.json")
+	original := []byte(`{"dns":{"tag":"dns-in","servers":["8.8.8.8"],"queryStrategy":"UseIP"}}`)
+	if err := os.WriteFile(dnsPath, original, 0600); err != nil {
+		t.Fatal(err)
+	}
+	routing := []byte(`{"routing":{"rules":[{"inboundTag":["dns-in"],"outboundTag":"proxy"},{"port":53,"outboundTag":"dns-out"}]}}`)
+	if err := os.WriteFile(filepath.Join(c.ConfigDir, "05_routing.json"), routing, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if routed, err := dnsTagRouted(c, "dns-in"); err != nil || !routed {
+		t.Fatalf("DNS-over-VLESS route not recognized: %v, %v", routed, err)
+	}
+	if _, err := New(c).DNSAutoOn(); err == nil || !strings.Contains(err.Error(), "DNS-over-VLESS") {
+		t.Fatalf("DNS auto accepted a routed tag: %v", err)
+	}
+	if current, err := os.ReadFile(dnsPath); err != nil || string(current) != string(original) {
+		t.Fatalf("routed DNS config changed: %v, %s", err, current)
+	}
+	if _, err := os.Lstat(filepath.Join(c.StateDir, "dns-auto-backup.json")); !os.IsNotExist(err) {
+		t.Fatalf("backup created for rejected config: %v", err)
 	}
 }
 
@@ -152,10 +198,13 @@ func TestDNSAutoOffRestoresExactBytesAndRejectsOutsideEdit(t *testing.T) {
 }
 
 func TestDNSAnswerMustContainMatchingSuccessfulReply(t *testing.T) {
-	answer := make([]byte, 12)
+	question, _, err := dnsQuestion()
+	if err != nil {
+		t.Fatal(err)
+	}
+	answer := append(question, 0xc0, 0x0c, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4, 93, 184, 215, 14)
 	binary.BigEndian.PutUint16(answer[0:2], 42)
 	binary.BigEndian.PutUint16(answer[2:4], 0x8180)
-	binary.BigEndian.PutUint16(answer[4:6], 1)
 	binary.BigEndian.PutUint16(answer[6:8], 1)
 	if !validDNSAnswer(answer, 42) || validDNSAnswer(answer, 43) {
 		t.Fatal("DNS ID mismatch was not detected")
@@ -163,6 +212,14 @@ func TestDNSAnswerMustContainMatchingSuccessfulReply(t *testing.T) {
 	binary.BigEndian.PutUint16(answer[2:4], 0x8182)
 	if validDNSAnswer(answer, 42) {
 		t.Fatal("SERVFAIL accepted")
+	}
+	binary.BigEndian.PutUint16(answer[2:4], 0x8180)
+	if validDNSAnswer(answer[:12], 42) || validDNSAnswer(answer[:len(answer)-1], 42) {
+		t.Fatal("truncated DNS reply accepted")
+	}
+	copy(answer[len(answer)-4:], []byte{192, 168, 1, 1})
+	if validDNSAnswer(answer, 42) {
+		t.Fatal("private DNS answer accepted as public connectivity")
 	}
 }
 
@@ -197,5 +254,14 @@ func TestDNSProbeConfigUsesBuiltinDNSOnLoopback(t *testing.T) {
 	}
 	if len(config.Inbounds) != 1 || config.Inbounds[0].Listen != "127.0.0.1" || config.Inbounds[0].Protocol != "dokodemo-door" || len(config.Outbounds) != 2 || config.Outbounds[1].Protocol != "dns" || len(config.Routing.Rules) != 2 || config.Routing.Rules[1].OutboundTag != "selected-vless" {
 		t.Fatalf("DNS probe could bypass built-in DNS or bind outside loopback: %s", b)
+	}
+}
+
+func TestDNSLocalDoHDoesNotClaimSelectedVLESSRoute(t *testing.T) {
+	if !dnsBypassesRouting(map[string]json.RawMessage{"servers": json.RawMessage(`["https+local://1.1.1.1/dns-query","https+local://dns.google/dns-query"]`)}) {
+		t.Fatal("local DoH was treated as a routed VLESS DNS query")
+	}
+	if dnsBypassesRouting(map[string]json.RawMessage{"servers": json.RawMessage(`["8.8.8.8"]`)}) {
+		t.Fatal("routed UDP DNS was treated as local")
 	}
 }

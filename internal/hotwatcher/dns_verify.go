@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -54,6 +55,20 @@ func dnsProbeConfig(dns map[string]json.RawMessage, outbound map[string]any, por
 		"routing":   map[string]any{"rules": rules},
 	}
 	return encode(config), nil
+}
+
+func dnsBypassesRouting(dns map[string]json.RawMessage) bool {
+	var servers []string
+	if json.Unmarshal(dns["servers"], &servers) != nil || len(servers) == 0 {
+		return false
+	}
+	for _, server := range servers {
+		server = strings.ToLower(strings.TrimSpace(server))
+		if server != "localhost" && !strings.HasPrefix(server, "https+local://") && !strings.HasPrefix(server, "tcp+local://") && !strings.HasPrefix(server, "quic+local://") {
+			return false
+		}
+	}
+	return true
 }
 
 func (e *Engine) probeDNSRoute(dns map[string]json.RawMessage, outbound map[string]any) (time.Duration, error) {
@@ -144,6 +159,10 @@ func (e *Engine) DNSVerify() (DNSVerification, error) {
 		result.Direct.Success, result.Direct.LatencyMS = true, &ms
 	} else {
 		result.Direct.Reason = err.Error()
+	}
+	if dnsBypassesRouting(src.dns) {
+		result.SelectedVLESS.Reason = "локальный DNS-режим обходит routing и выбранный VLESS; этот маршрут не проверяется"
+		return result, nil
 	}
 	s, err := e.state()
 	if err != nil {

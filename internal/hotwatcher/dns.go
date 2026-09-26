@@ -205,6 +205,65 @@ func findDNSSource(c Config) (dnsSource, error) {
 	return dnsSource{path: path, root: map[string]json.RawMessage{}, dns: map[string]json.RawMessage{}, created: true}, nil
 }
 
+// DOH Local Mode bypasses routing, including rules matching dns.tag. Refuse
+// automatic replacement when a configured DNS-over-proxy route would be lost.
+func dnsTagRouted(c Config, tag string) (bool, error) {
+	if tag == "" {
+		return false, nil
+	}
+	entries, err := os.ReadDir(c.ConfigDir)
+	if err != nil {
+		return false, err
+	}
+	for _, entry := range entries {
+		if !strings.HasSuffix(strings.ToLower(entry.Name()), ".json") {
+			continue
+		}
+		b, err := readLimited(filepath.Join(c.ConfigDir, entry.Name()), 8*1024*1024)
+		if err != nil {
+			return false, err
+		}
+		root, err := parseDNSFragment(b)
+		if err != nil {
+			if bytes.Contains(b, []byte(`"routing"`)) {
+				return false, fmt.Errorf("не могу проверить маршрутизацию DNS в %s: %w", entry.Name(), err)
+			}
+			continue
+		}
+		raw := root["routing"]
+		if len(raw) == 0 {
+			continue
+		}
+		var routing struct {
+			Rules []struct {
+				InboundTag json.RawMessage `json:"inboundTag"`
+			} `json:"rules"`
+		}
+		if err := json.Unmarshal(raw, &routing); err != nil {
+			return false, fmt.Errorf("не могу проверить маршрутизацию DNS в %s: %w", entry.Name(), err)
+		}
+		for _, rule := range routing.Rules {
+			if len(rule.InboundTag) == 0 {
+				continue
+			}
+			var tags []string
+			if err := json.Unmarshal(rule.InboundTag, &tags); err != nil {
+				var single string
+				if json.Unmarshal(rule.InboundTag, &single) != nil {
+					return false, errors.New("не могу проверить inboundTag в маршрутизации DNS")
+				}
+				tags = []string{single}
+			}
+			for _, used := range tags {
+				if used == tag {
+					return true, nil
+				}
+			}
+		}
+	}
+	return false, nil
+}
+
 func (e *Engine) DNSStatus() (DNSStatus, error) {
 	src, err := findDNSSource(e.C)
 	if err != nil {
@@ -320,6 +379,9 @@ func prepareDNS(src dnsSource, available []dnsCandidate) ([]byte, []string, erro
 	dns["hosts"], _ = json.Marshal(hosts)
 	dns["servers"], _ = json.Marshal(servers)
 	dns["enableParallelQuery"] = json.RawMessage("true")
+	if len(dns["queryStrategy"]) == 0 {
+		dns["queryStrategy"] = json.RawMessage(`"UseIP"`)
+	}
 	root["dns"], _ = json.Marshal(dns)
 	return encode(root), servers, nil
 }
@@ -398,6 +460,17 @@ func (e *Engine) DNSAutoOn() (DNSChange, error) {
 	src, err := findDNSSource(e.C)
 	if err != nil {
 		return result, err
+	}
+	var tag string
+	if raw := src.dns["tag"]; len(raw) != 0 {
+		if err := json.Unmarshal(raw, &tag); err != nil {
+			return result, errors.New("неверный tag в DNS-конфигурации")
+		}
+	}
+	if routed, err := dnsTagRouted(e.C, tag); err != nil {
+		return result, err
+	} else if routed {
+		return result, errors.New("DNS tag направлен через routing; прямой DoH изменил бы DNS-over-VLESS, конфигурация не изменена")
 	}
 	if _, _, err := prepareDNS(src, dnsCandidates); err != nil {
 		return result, err
