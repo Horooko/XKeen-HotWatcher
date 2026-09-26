@@ -60,9 +60,22 @@ func (x Xray) run(input []byte, args ...string) ([]byte, error) {
 	var out cappedBuffer
 	cmd.Stdout = &out
 	cmd.Stderr = io.Discard
-	if e := cmd.Run(); e != nil {
+	var commandErr error
+	if len(args) > 0 && args[0] == "run" {
+		probe, startErr := startAuxiliaryXray(cmd)
+		if startErr != nil {
+			return nil, startErr
+		}
+		commandErr = probe.result("Xray command failed; raw output suppressed to protect credentials")
+	} else {
+		commandErr = cmd.Run()
+	}
+	if commandErr != nil {
 		if ctx.Err() != nil {
 			return nil, errors.New("Xray command timeout")
+		}
+		if errors.Is(commandErr, errAuxiliaryMemory) {
+			return nil, commandErr
 		}
 		return nil, errors.New("Xray command failed; raw output suppressed to protect credentials")
 	}
@@ -262,24 +275,17 @@ func (x Xray) ProbeLatency(n Node) (time.Duration, error) {
 	cmd.Env = append(isolatedEnv(), "XRAY_LOCATION_ASSET="+x.C.AssetDir)
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
-	if e = cmd.Start(); e != nil {
-		return 0, errors.New("cannot start isolated candidate probe")
+	probe, e := startAuxiliaryXray(cmd)
+	if e != nil {
+		return 0, fmt.Errorf("cannot start isolated candidate probe: %w", e)
 	}
-	done := make(chan struct{})
-	go func() { cmd.Wait(); close(done) }()
-	defer func() {
-		cmd.Process.Kill()
-		select {
-		case <-done:
-		case <-time.After(3 * time.Second):
-		}
-	}()
+	defer probe.stop()
 	address := fmt.Sprintf("127.0.0.1:%d", port)
 	ready := false
 	for i := 0; i < 50; i++ {
 		select {
-		case <-done:
-			return 0, errors.New("isolated candidate probe exited at startup")
+		case <-probe.done:
+			return 0, probe.unexpectedExit("isolated candidate probe exited at startup")
 		default:
 		}
 		conn, err := net.DialTimeout("tcp", address, 100*time.Millisecond)
@@ -316,12 +322,17 @@ func (x Xray) ProbeLatency(n Node) (time.Duration, error) {
 		res.Body.Close()
 		if res.StatusCode == 204 {
 			select {
-			case <-done:
-				return 0, errors.New("candidate probe exited unexpectedly")
+			case <-probe.done:
+				return 0, probe.unexpectedExit("candidate probe exited unexpectedly")
 			default:
 				return time.Since(started), nil
 			}
 		}
+	}
+	select {
+	case <-probe.done:
+		return 0, probe.unexpectedExit("isolated candidate probe exited during network checks")
+	default:
 	}
 	return 0, errors.New("candidate could not reach any HTTPS probe endpoint with status 204")
 }

@@ -48,7 +48,11 @@ func TestDNSPreparePreservesSettingsAndRejectsComplexRules(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(servers) != 2 || strings.Contains(string(prepared), "yandex") || strings.Contains(string(prepared), "old.example") {
+	repeated, _, err := prepareDNS(src, dnsCandidates)
+	if err != nil || string(prepared) != string(repeated) {
+		t.Fatalf("DNS preparation changed its source: %v", err)
+	}
+	if len(servers) != 2 || servers[0] != "https+local://1.1.1.1/dns-query" || servers[1] != "https+local://dns.google/dns-query" || strings.Contains(string(prepared), "yandex") || strings.Contains(string(prepared), "old.example") {
 		t.Fatalf("unexpected DNS servers: %s", prepared)
 	}
 	var root map[string]json.RawMessage

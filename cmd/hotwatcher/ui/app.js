@@ -10,12 +10,17 @@
   const pageTitles = { overview: "Обзор подключения", keys: "Управление ключами", "url-test": "Проверка сайтов", system: "XKeen и Xray", updates: "Обновления" };
 
   async function api(path, options = {}) {
-    const response = await fetch(path, {
-      credentials: "same-origin",
-      cache: "no-store",
-      ...options,
-      headers: { ...(options.body ? { "Content-Type": "application/json" } : {}), ...(csrf ? { "X-HW-CSRF": csrf } : {}), ...(options.headers || {}) }
-    });
+    let response;
+    try {
+      response = await fetch(path, {
+        credentials: "same-origin",
+        cache: "no-store",
+        ...options,
+        headers: { ...(options.body ? { "Content-Type": "application/json" } : {}), ...(csrf ? { "X-HW-CSRF": csrf } : {}), ...(options.headers || {}) }
+      });
+    } catch (_) {
+      throw new Error("Нет связи с Hot Watcher на роутере. Проверьте сеть и повторите.");
+    }
     let data;
     try { data = await response.json(); } catch (_) { throw new Error("Сервер вернул неверный ответ"); }
     if (!response.ok) {

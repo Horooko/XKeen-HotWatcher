@@ -564,6 +564,12 @@ func ageText(d time.Duration) string {
 	return fmt.Sprintf("%d сек", seconds)
 }
 func daemon(c hw.Config, e *hw.Engine) error {
+	unlockDaemon, err := hw.LockDaemon(c.StateDir)
+	if err != nil {
+		hw.SafeLog(c, "daemon_start_refused", map[string]any{"message": err.Error()})
+		return err
+	}
+	defer unlockDaemon()
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	if c.WebUIEnabled {

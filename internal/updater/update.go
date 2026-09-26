@@ -631,7 +631,11 @@ func RepairOfflineBootstrap(expected string) error {
 	s.Available, s.Deferred, s.BlockedHash, s.ETag = "", "", "", ""
 	s.Failures = 0
 	s.NextCheck = time.Now().UTC()
-	return save(statePath(), s)
+	if err := save(statePath(), s); err != nil {
+		return err
+	}
+	recordResult("installed", s.Previous, expected)
+	return nil
 }
 func verifyManifest(b, sigBytes []byte) (Manifest, error) {
 	var m Manifest

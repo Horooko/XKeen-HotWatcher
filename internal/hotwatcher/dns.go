@@ -250,7 +250,15 @@ func prepareDNS(src dnsSource, available []dnsCandidate) ([]byte, []string, erro
 	if len(available) < 2 {
 		return nil, nil, errors.New("доступно менее двух доверенных DNS-провайдеров; конфигурация не изменена")
 	}
-	if raw := src.dns["servers"]; len(raw) > 0 {
+	dns := make(map[string]json.RawMessage, len(src.dns))
+	for key, value := range src.dns {
+		dns[key] = value
+	}
+	root := make(map[string]json.RawMessage, len(src.root))
+	for key, value := range src.root {
+		root[key] = value
+	}
+	if raw := dns["servers"]; len(raw) > 0 {
 		var old []json.RawMessage
 		if err := json.Unmarshal(raw, &old); err != nil {
 			return nil, nil, errors.New("неподдерживаемый список DNS-серверов; конфигурация не изменена")
@@ -266,7 +274,7 @@ func prepareDNS(src dnsSource, available []dnsCandidate) ([]byte, []string, erro
 		}
 	}
 	var hosts map[string]json.RawMessage
-	if raw := src.dns["hosts"]; len(raw) > 0 {
+	if raw := dns["hosts"]; len(raw) > 0 {
 		if err := json.Unmarshal(raw, &hosts); err != nil || hosts == nil {
 			return nil, nil, errors.New("неподдерживаемый DNS hosts; конфигурация не изменена")
 		}
@@ -275,7 +283,15 @@ func prepareDNS(src dnsSource, available []dnsCandidate) ([]byte, []string, erro
 	}
 	servers := make([]string, 0, len(available))
 	for _, candidate := range available {
-		servers = append(servers, candidate.URL)
+		endpoint, err := url.Parse(candidate.URL)
+		if err != nil || endpoint.Scheme != "https" || endpoint.Hostname() != candidate.Hostname || endpoint.Path == "" {
+			return nil, nil, errors.New("неверный адрес доверенного DNS-провайдера")
+		}
+		// The direct DoH probe above only proves direct access. Xray's plain
+		// https:// DoH enters routing and may recursively require the proxy
+		// whose server hostname is being resolved. Match the probed route.
+		endpoint.Scheme = "https+local"
+		servers = append(servers, endpoint.String())
 		if candidate.Hostname == candidate.BootstrapIP {
 			continue
 		}
@@ -301,11 +317,11 @@ func prepareDNS(src dnsSource, available []dnsCandidate) ([]byte, []string, erro
 			hosts[candidate.Hostname], _ = json.Marshal(candidate.BootstrapIP)
 		}
 	}
-	src.dns["hosts"], _ = json.Marshal(hosts)
-	src.dns["servers"], _ = json.Marshal(servers)
-	src.dns["enableParallelQuery"] = json.RawMessage("true")
-	src.root["dns"], _ = json.Marshal(src.dns)
-	return encode(src.root), servers, nil
+	dns["hosts"], _ = json.Marshal(hosts)
+	dns["servers"], _ = json.Marshal(servers)
+	dns["enableParallelQuery"] = json.RawMessage("true")
+	root["dns"], _ = json.Marshal(dns)
+	return encode(root), servers, nil
 }
 
 func specialDNSResolver(server string) bool {
@@ -405,6 +421,18 @@ func (e *Engine) DNSAutoOn() (DNSChange, error) {
 	}
 	if err := validateDNSStaged(e.C, src.path, prepared); err != nil {
 		return result, err
+	}
+	preparedRoot, err := parseDNSFragment(prepared)
+	if err != nil {
+		return result, err
+	}
+	var preparedDNS map[string]json.RawMessage
+	if err := json.Unmarshal(preparedRoot["dns"], &preparedDNS); err != nil {
+		return result, err
+	}
+	direct := map[string]any{"tag": "hw-dns-direct", "protocol": "freedom", "settings": map[string]any{}}
+	if _, err := e.probeDNSRoute(preparedDNS, direct); err != nil {
+		return result, fmt.Errorf("новый DNS не ответил в изолированном Xray; конфигурация не изменена: %w", err)
 	}
 	if err := dnsSourceUnchanged(src); err != nil {
 		return result, err

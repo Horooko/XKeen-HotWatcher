@@ -53,24 +53,17 @@ func (x Xray) URLTest(n Node, sites []string) (URLTestReport, error) {
 	cmd := exec.CommandContext(ctx, x.C.XrayBinary, "run", "-config", path)
 	cmd.Env = append(isolatedEnv(), "XRAY_LOCATION_ASSET="+x.C.AssetDir)
 	cmd.Stdout, cmd.Stderr = io.Discard, io.Discard
-	if err := cmd.Start(); err != nil {
-		return report, errors.New("URL Test: не удалось запустить временный Xray")
+	probe, err := startAuxiliaryXray(cmd)
+	if err != nil {
+		return report, fmt.Errorf("URL Test: %w", err)
 	}
-	done := make(chan struct{})
-	go func() { _ = cmd.Wait(); close(done) }()
-	defer func() {
-		_ = cmd.Process.Kill()
-		select {
-		case <-done:
-		case <-time.After(3 * time.Second):
-		}
-	}()
+	defer probe.stop()
 	address := fmt.Sprintf("127.0.0.1:%d", port)
 	ready := false
 	for i := 0; i < 50; i++ {
 		select {
-		case <-done:
-			return report, errors.New("URL Test: временный Xray завершился при запуске")
+		case <-probe.done:
+			return report, probe.unexpectedExit("URL Test: временный Xray завершился при запуске")
 		default:
 		}
 		conn, dialErr := net.DialTimeout("tcp", address, 100*time.Millisecond)
@@ -148,8 +141,8 @@ func (x Xray) URLTest(n Node, sites []string) (URLTestReport, error) {
 		}
 	}
 	select {
-	case <-done:
-		return report, errors.New("URL Test: временный Xray завершился до окончания проверки")
+	case <-probe.done:
+		return report, probe.unexpectedExit("URL Test: временный Xray завершился до окончания проверки")
 	default:
 	}
 	return report, nil

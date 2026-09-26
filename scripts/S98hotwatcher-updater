@@ -37,7 +37,10 @@ stop() {
   if kill -0 "$PID" 2>/dev/null; then echo 'Unverified updater PID; stop deferred.' >&2; return 1; fi
   rm -f "$PIDFILE" "$STARTFILE";return 0
  fi
- kill -TERM "$PID"
+ kill -TERM "$PID" || return 1
+ N=0
+ while running && [ "$N" -lt 30 ]; do sleep 1; N=$((N+1)); done
+ if running; then echo 'Updater is still stopping; service markers retained.' >&2; return 1; fi
  rm -f "$PIDFILE" "$STARTFILE"
 }
 case "${1:-}" in

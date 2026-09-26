@@ -42,8 +42,8 @@ on_exit() {
  if [ "$RESTORE" = 1 ]; then
   echo 'Repair failed; restoring previous binaries.' >&2
   set +e
-  /opt/etc/init.d/S99hotwatcher stop >/dev/null 2>&1
   /opt/etc/init.d/S98hotwatcher-updater stop >/dev/null 2>&1
+  /opt/etc/init.d/S99hotwatcher stop >/dev/null 2>&1
   install_binary "$BACKUP/hotwatcher" hotwatcher
   install_binary "$BACKUP/hotwatcher-updater" hotwatcher-updater
   cp "$BACKUP/updater-state.json" /opt/var/lib/hotwatcher-updater/state.json
@@ -60,8 +60,8 @@ on_exit() {
 trap on_exit EXIT
 trap 'exit 1' HUP INT TERM
 RESTORE=1
-/opt/etc/init.d/S99hotwatcher stop
 /opt/etc/init.d/S98hotwatcher-updater stop
+/opt/etc/init.d/S99hotwatcher stop
 install_binary "$HERE/dist/hotwatcher-linux-$ARCH" hotwatcher
 install_binary "$HERE/dist/hotwatcher-updater-linux-$ARCH" hotwatcher-updater
 [ "$(/opt/sbin/hotwatcher version)" = "$EXPECTED" ] || { echo 'Installed version differs from package.' >&2; exit 1; }

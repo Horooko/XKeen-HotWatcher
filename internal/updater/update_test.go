@@ -113,6 +113,10 @@ func TestOfflineRepairRecordsBinaryAndPreservesHighWater(t *testing.T) {
 	if s.Invalid || s.Installed != "0.3.1" || s.Previous != "0.2.4" || s.InstalledHash != hash || s.HighWater != 3001 || s.Verified {
 		t.Fatal("offline repair state incorrect", s)
 	}
+	result := readResult()
+	if result == nil || result.Outcome != "installed" || result.Previous != "0.2.4" || result.Target != "0.3.1" {
+		t.Fatal("offline repair result incorrect", result)
+	}
 	if err := save(statePath(), State{Installed: "0.3.2", HighWater: 3002}); err != nil {
 		t.Fatal(err)
 	}
