@@ -1,5 +1,5 @@
 #!/bin/sh
-# One-time recovery for v0.2.4, whose GitHub Releases decoder rejects "url".
+# One-time archive recovery when an installed updater cannot apply a release.
 # Run from the extracted, signed-release installation package as root.
 set -eu
 [ "$(id -u)" = 0 ] || { echo 'Run as root in Entware shell.' >&2; exit 1; }
@@ -76,4 +76,4 @@ if [ -f /opt/etc/hotwatcher/update-enabled ]; then
  /opt/etc/init.d/S98hotwatcher-updater start
 fi
 RESTORE=0
-echo "Updater decoder repaired with Hot Watcher $EXPECTED. Production Xray was not restarted."
+echo "Hot Watcher $EXPECTED installed and updater state repaired. Production Xray was not restarted."

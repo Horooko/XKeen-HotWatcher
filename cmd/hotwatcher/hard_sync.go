@@ -101,7 +101,10 @@ func hardSync(c hw.Config, engine *hw.Engine) (err error) {
 		return errors.New("файл ключей изменён вне Hot Watcher")
 	}
 	if status["api_reachable"] != true {
-		return errors.New("API Xray недоступен; сначала запустите XKeen")
+		if running := xrayProcessRunning("/proc", c.XrayBinary, c.StateDir); running != nil && !*running {
+			return errors.New("основной сервер Xray не запущен; hard-sync не начат. xkeen -status может принять служебный процесс xray api за сервер; проверьте процессы Xray и восстановите XKeen")
+		}
+		return fmt.Errorf("API Xray на %s недоступен; hard-sync не начат. Проверьте основной процесс Xray и его API", c.APIAddress)
 	}
 	if _, err = c.URL(); err != nil {
 		return err

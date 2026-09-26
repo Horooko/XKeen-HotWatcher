@@ -20,6 +20,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -164,6 +165,7 @@ type UpdateResult struct {
 	Outcome  string    `json:"outcome"`
 	Previous string    `json:"previous,omitempty"`
 	Target   string    `json:"target,omitempty"`
+	Reason   string    `json:"reason,omitempty"`
 }
 
 func resultPath() string { return filepath.Join(Root, "last-result.json") }
@@ -172,13 +174,17 @@ func recordResult(outcome, previous, target string) {
 	_ = save(resultPath(), UpdateResult{Schema: 1, Time: time.Now().UTC(), Outcome: outcome, Previous: previous, Target: target})
 }
 
+func recordDeferred(previous, target string, reason error) {
+	_ = save(resultPath(), UpdateResult{Schema: 1, Time: time.Now().UTC(), Outcome: "deferred", Previous: previous, Target: target, Reason: reason.Error()})
+}
+
 func readResult() *UpdateResult {
 	b, err := privateRead(resultPath(), 4096)
 	if err != nil {
 		return nil
 	}
 	var result UpdateResult
-	if strictJSON(b, &result) != nil || result.Schema != 1 || result.Time.IsZero() || (result.Outcome != "installed" && result.Outcome != "rolled_back") {
+	if strictJSON(b, &result) != nil || result.Schema != 1 || result.Time.IsZero() || (result.Outcome != "installed" && result.Outcome != "rolled_back" && result.Outcome != "deferred") {
 		return nil
 	}
 	return &result
@@ -219,9 +225,17 @@ func readHeartbeat(path, id, version string, pid int) bool {
 	return h.Ready && h.ID == id && h.Version == version && h.PID > 0 && (pid == 0 || h.PID == pid)
 }
 
-func xrayIdentity() (ProcessIdentity, error) {
-	var found ProcessIdentity
-	entries, e := os.ReadDir("/proc")
+func xrayIdentities() ([]ProcessIdentity, error) {
+	c, err := hw.LoadConfig("/opt/etc/hotwatcher/config.json")
+	if err != nil {
+		return nil, err
+	}
+	return scanXrayIdentities("/proc", c.XrayBinary, c.StateDir)
+}
+
+func scanXrayIdentities(procDir, binary, stateDir string) ([]ProcessIdentity, error) {
+	found := []ProcessIdentity{}
+	entries, e := os.ReadDir(procDir)
 	if e != nil {
 		return found, e
 	}
@@ -230,12 +244,28 @@ func xrayIdentity() (ProcessIdentity, error) {
 		if e != nil {
 			continue
 		}
-		base := filepath.Join("/proc", entry.Name())
+		base := filepath.Join(procDir, entry.Name())
 		exe, e := os.Readlink(filepath.Join(base, "exe"))
-		if e != nil || exe != "/opt/sbin/xray" && exe != "/opt/sbin/xray (deleted)" {
+		if e != nil {
+			continue
+		}
+		if exe != binary && exe != binary+" (deleted)" {
+			continue
+		}
+		args, e := os.ReadFile(filepath.Join(base, "cmdline"))
+		if os.IsNotExist(e) {
+			continue
+		}
+		if e != nil {
+			return found, e
+		}
+		if !hw.IsXrayServerCommand(strings.Split(strings.TrimRight(string(args), "\x00"), "\x00"), binary, stateDir) {
 			continue
 		}
 		stat, e := os.ReadFile(filepath.Join(base, "stat"))
+		if os.IsNotExist(e) {
+			continue
+		}
 		if e != nil {
 			return found, e
 		}
@@ -247,19 +277,10 @@ func xrayIdentity() (ProcessIdentity, error) {
 		if len(fields) < 20 {
 			return found, errors.New("invalid Xray proc fields")
 		}
-		args, e := os.ReadFile(filepath.Join(base, "cmdline"))
-		if e != nil {
-			return found, e
-		}
 		h := sha256.Sum256(args)
-		if found.PID != 0 {
-			return found, errors.New("multiple primary Xray processes; update deferred")
-		}
-		found = ProcessIdentity{PID: pid, StartTime: fields[19], Executable: exe, ArgumentsSHA256: hex.EncodeToString(h[:])}
+		found = append(found, ProcessIdentity{PID: pid, StartTime: fields[19], Executable: exe, ArgumentsSHA256: hex.EncodeToString(h[:])})
 	}
-	if found.PID == 0 {
-		return found, errors.New("primary Xray process unavailable")
-	}
+	sort.Slice(found, func(i, j int) bool { return found[i].PID < found[j].PID })
 	return found, nil
 }
 func protectedHashes() (map[string]string, error) {
@@ -282,23 +303,39 @@ func protectedHashes() (map[string]string, error) {
 	}
 	return out, nil
 }
-func selectedRuntime() (string, error) {
+
+type runtimeSnapshot struct {
+	Adopted              bool
+	APIReachable         bool
+	BalancerAPIReachable bool
+	BalancerPinMatches   bool
+	Selected             string
+	RuntimeOverride      string
+}
+
+func selectedRuntime() (runtimeSnapshot, error) {
 	c, e := hw.LoadConfig("/opt/etc/hotwatcher/config.json")
 	if e != nil {
-		return "", e
+		return runtimeSnapshot{}, e
 	}
 	v, e := hw.New(c).Status()
 	if e != nil {
-		return "", e
+		return runtimeSnapshot{}, e
 	}
-	if v["adopted"] != true {
-		return "", nil
+	return runtimeSnapshotFromStatus(v), nil
+}
+
+func runtimeSnapshotFromStatus(v map[string]any) runtimeSnapshot {
+	selected, _ := v["selected"].(string)
+	override, _ := v["runtime_override"].(string)
+	return runtimeSnapshot{
+		Adopted:              v["adopted"] == true,
+		APIReachable:         v["api_reachable"] == true,
+		BalancerAPIReachable: v["balancer_api_reachable"] == true,
+		BalancerPinMatches:   v["balancer_pin_matches"] == true,
+		Selected:             selected,
+		RuntimeOverride:      override,
 	}
-	pin, _ := v["runtime_override"].(string)
-	if v["api_reachable"] != true || v["balancer_pin_matches"] != true || pin == "" {
-		return "", errors.New("selected Xray runtime pin is not ready")
-	}
-	return pin, nil
 }
 
 func strictJSON(b []byte, v any) error {
@@ -988,7 +1025,7 @@ func apply(ctx context.Context, c Config, m Manifest, a Asset, source string, s 
 	if _, e := exec.CommandContext(ctx, source, "update-preflight").CombinedOutput(); e != nil {
 		return fmt.Errorf("candidate preflight: %w", e)
 	}
-	xrayBefore, e := xrayIdentity()
+	xrayBefore, e := xrayIdentities()
 	if e != nil {
 		return e
 	}
@@ -1072,8 +1109,8 @@ func apply(ctx context.Context, c Config, m Manifest, a Asset, source string, s 
 			return rollback(j, s, fmt.Errorf("candidate validation exited early: %w", e))
 		}
 	}
-	xrayAfter, e := xrayIdentity()
-	if e != nil || xrayBefore != xrayAfter {
+	xrayAfter, e := xrayIdentities()
+	if e != nil || !slices.Equal(xrayBefore, xrayAfter) {
 		return rollback(j, s, errors.New("external Xray process changed during software update"))
 	}
 	protectedAfter, e := protectedHashes()
@@ -1123,8 +1160,8 @@ func apply(ctx context.Context, c Config, m Manifest, a Asset, source string, s 
 			return rollback(j, s, errors.New("normal daemon exited after readiness"))
 		}
 	}
-	xrayFinal, e := xrayIdentity()
-	if e != nil || xrayFinal != xrayBefore {
+	xrayFinal, e := xrayIdentities()
+	if e != nil || !slices.Equal(xrayFinal, xrayBefore) {
 		return rollback(j, s, errors.New("external Xray process changed before commit"))
 	}
 	protectedFinal, e := protectedHashes()
