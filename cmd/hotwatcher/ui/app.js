@@ -126,10 +126,12 @@
       const actions = make("td", "actions-col");
       const group = make("div", "inline-actions");
       if (key.Applied) {
-        const test = make("button", "row-button", "URL Test");
-        test.type = "button";
-        test.addEventListener("click", () => startAction("url-test", key.Tag));
-        group.append(test);
+        if (key.Selected || current?.economy_checks === false) {
+          const test = make("button", "row-button", "URL Test");
+          test.type = "button";
+          test.addEventListener("click", () => startAction("url-test", key.Tag));
+          group.append(test);
+        }
         if (!key.Selected) {
           const select = make("button", "row-button select", "Выбрать");
           select.type = "button";
@@ -211,7 +213,8 @@
     text("resultTime", dateLabel(report.time));
     const completed = (report.progress_known || running) ? report.results.filter((item) => item.completed).length : report.results.length;
     const opened = report.results.filter((item) => item.ok).length;
-    text("resultSummary", "Проверено " + completed + " из " + report.results.length + " · открывается " + opened + " · не открывается " + (completed - opened));
+    const route = report.mode === "main_xray" ? " · основной Xray" : report.mode === "isolated" ? " · отдельный Xray" : "";
+    text("resultSummary", "Проверено " + completed + " из " + report.results.length + " · открывается " + opened + " · не открывается " + (completed - opened) + route);
     badge($("resultBadge"), running ? "Идёт проверка" : completed < report.results.length ? "Прервано" : report.passed ? "Все открылись" : "Есть ошибки", running || completed < report.results.length ? "neutral" : report.passed ? "good" : "bad");
     if (!running) lastReport = report;
     $("downloadReportButton").disabled = running || !lastReport;
@@ -219,7 +222,7 @@
       const row = make("div", "result-row" + (item.ok ? " ok" : ""));
       row.append(make("span", "result-dot"), make("span", "result-site", siteName(item.site)));
       const pending = (running || report.progress_known) && !item.completed;
-      const detail = pending ? running ? "Ожидает проверки" : "Не проверено" : item.ok ? "Открывается · " + Math.round(item.latency_ms || 0) + " мс" : item.status ? "Не открывается · HTTP " + item.status : "Не открывается · " + (item.reason || "Ошибка");
+      const detail = pending ? running ? "Ожидает проверки" : "Не проверено" : item.ok ? "Открывается · " + Math.round(item.latency_ms || 0) + " мс" : "Не открывается · " + (item.reason || (item.status ? "HTTP " + item.status : "Ошибка")) + (item.reason && item.status ? " · HTTP " + item.status : "");
       row.append(make("span", "result-detail", detail));
       list.append(row);
     }
@@ -229,7 +232,7 @@
     if (!lastReport?.results?.length) return;
     const opened = lastReport.results.filter((item) => item.ok).length;
     const completed = lastReport.progress_known ? lastReport.results.filter((item) => item.completed).length : lastReport.results.length;
-    const lines = ["Hot Watcher — отчёт URL Test", "Время: " + new Date(lastReport.time).toLocaleString("ru-RU"), "Ключ: " + (lastReport.tag || "—"), "Проверено: " + completed + " из " + lastReport.results.length, "Открывается: " + opened, ""];
+    const lines = ["Hot Watcher — отчёт URL Test", "Время: " + new Date(lastReport.time).toLocaleString("ru-RU"), "Ключ: " + (lastReport.tag || "—"), "Режим: " + (lastReport.mode === "main_xray" ? "основной Xray" : lastReport.mode === "isolated" ? "отдельный Xray" : "не указан"), "Проверено: " + completed + " из " + lastReport.results.length, "Открывается: " + opened, ""];
     for (const item of lastReport.results) {
       const outcome = lastReport.progress_known && !item.completed ? "Не проверено" : item.ok ? "Открывается" : "Не открывается";
       lines.push(outcome + " | " + item.site + " | " + (item.status ? "HTTP " + item.status : item.reason || "") + (item.latency_ms != null ? " | " + Math.round(item.latency_ms) + " мс" : ""));
@@ -244,6 +247,8 @@
 
   function renderOverview(data) {
     current = data;
+    $("economyChecks").checked = data.economy_checks !== false;
+    text("probeModeNote", data.economy_checks === false ? "Отдельный Xray проверяет выбранный ключ; URL Test запускается только для одного кандидата." : "URL Test проверяет выбранный ключ один раз через основной Xray. При неудаче текущий ключ сохраняется.");
     const status = data.status || {};
     const keys = data.keys || {};
     const list = inventoryKeys(keys);
@@ -385,6 +390,19 @@
       await refreshUpdate();
     } catch (error) { showBanner("Политика обновлений", error.message, "failed"); }
   }
+  async function saveProbeMode() {
+    const checkbox = $("economyChecks");
+    const enabled = checkbox.checked;
+    checkbox.disabled = true;
+    try {
+      await api("/api/probe-mode", { method: "PUT", body: JSON.stringify({ economy_checks: enabled }) });
+      showBanner("Режим проверки", enabled ? "Экономная проверка включена." : "Проверка отдельным Xray включена.", "succeeded");
+      await refresh();
+    } catch (error) {
+      checkbox.checked = !enabled;
+      showBanner("Режим проверки", error.message, "failed");
+    } finally { checkbox.disabled = false; }
+  }
 
   $("loginForm").addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -401,6 +419,7 @@
   $("syncButton").addEventListener("click", () => startAction("sync"));
   $("checkButton").addEventListener("click", () => startAction("check-key"));
   $("testSelectedButton").addEventListener("click", () => startAction("url-test"));
+  $("economyChecks").addEventListener("change", saveProbeMode);
   $("downloadReportButton").addEventListener("click", downloadReport);
   $("pinSelectedButton").addEventListener("click", () => { const key = inventoryKeys(current?.keys).find((item) => item.Selected); if (key) startAction("pin", key.Tag); });
   $("autoButton").addEventListener("click", () => startAction("auto"));

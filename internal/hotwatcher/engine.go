@@ -352,11 +352,6 @@ func (e *Engine) fastest(nodes []Node, fallback string, selectedAt time.Time) (s
 	bestLatency := time.Duration(0)
 	currentLatency := time.Duration(0)
 	currentVerified := false
-	type measured struct {
-		node    Node
-		latency time.Duration
-	}
-	var candidates []measured
 	for _, n := range nodes {
 		latency, err := e.probeLatency(n)
 		if err != nil {
@@ -366,7 +361,6 @@ func (e *Engine) fastest(nodes []Node, fallback string, selectedAt time.Time) (s
 		if best == "" || latency < bestLatency || (latency == bestLatency && n.Tag == fallback) {
 			best, bestLatency = n.Tag, latency
 		}
-		candidates = append(candidates, measured{n, latency})
 		if n.Tag == fallback {
 			currentLatency, currentVerified = latency, true
 		}
@@ -392,32 +386,15 @@ func (e *Engine) fastest(nodes []Node, fallback string, selectedAt time.Time) (s
 	if _, err := e.URLTestSites(); err != nil {
 		return "", err
 	}
-	sort.Slice(candidates, func(i, j int) bool {
-		if candidates[i].latency == candidates[j].latency {
-			return candidates[i].node.Tag < candidates[j].node.Tag
-		}
-		return candidates[i].latency < candidates[j].latency
-	})
-	for _, candidate := range candidates {
-		if candidate.node.Tag != preferred {
-			continue
-		}
-		if _, err := e.urlTestNode(candidate.node); err == nil {
-			return preferred, nil
-		}
-		e.UnreachableCount++
-		break
+	selectedNode, ok := findNode(nodes, preferred)
+	if !ok {
+		return "", errors.New("выбранный ключ отсутствует в наборе")
 	}
-	for _, candidate := range candidates {
-		if candidate.node.Tag == preferred {
-			continue
-		}
-		if _, err := e.urlTestNode(candidate.node); err == nil {
-			return candidate.node.Tag, nil
-		}
+	if _, err := e.urlTestNode(selectedNode); err != nil {
 		e.UnreachableCount++
+		return "", fmt.Errorf("URL Test выбранного ключа не прошёл; старый выбор сохранён: %w", err)
 	}
-	return "", errors.New("URL Test: ни один ключ не открыл все обязательные сайты; старый выбор сохранён")
+	return preferred, nil
 }
 func (e *Engine) setVerified(tag string) error {
 	if er := e.R.Override(tag); er != nil {
@@ -1110,16 +1087,12 @@ func (e *Engine) CheckKey() (string, error) {
 		}
 		return peers[i].latency < peers[j].latency
 	})
-	for _, peer := range peers {
-		if err = e.Select(peer.tag); err == nil {
-			e.event("key_failover", map[string]any{"from": s.Selected, "to": peer.tag})
-			return peer.tag, nil
-		}
-		if e.pending() {
-			return "", err
-		}
+	peer := peers[0]
+	if err = e.Select(peer.tag); err == nil {
+		e.event("key_failover", map[string]any{"from": s.Selected, "to": peer.tag})
+		return peer.tag, nil
 	}
-	return "", fmt.Errorf("verified peers failed final switch; old selection kept: %w", err)
+	return "", fmt.Errorf("выбранный запасной ключ не применён; старый выбор сохранён: %w", err)
 }
 func (e *Engine) Doctor() (map[string]any, error) {
 	result := map[string]any{"version": Version, "checks": map[string]bool{}, "secrets_printed": false}

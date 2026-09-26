@@ -32,7 +32,7 @@ function fixture(overrides = {}) {
   return { version: 'test', status: { api_reachable: true, balancer_api_reachable: true, adopted: true },
     system: { installed: true, command_ok: true, checked_at: '2026-09-26T00:00:00Z', xray_running: true },
     keys: { Keys: [{ tag: 'main--VL-fi', name: '🇫🇮 Финляндия', checked: true, verified: true, Selected: true, Applied: true }] },
-    sites: ['https://example.com/'], warnings: [], ...overrides };
+    sites: ['https://example.com/'], economy_checks: true, warnings: [], ...overrides };
 }
 async function app() {
   const elements = new Map();
@@ -115,6 +115,17 @@ test('empty key inventories are rendered without throwing', async () => {
   assert.equal(a.elements.get('keysBody').children.length, 0);
   assert.equal(a.elements.get('keysEmpty').hidden, false);
 });
+test('economy mode is selected by default and checkbox saves the choice', async () => {
+  const a = await app();
+  a.renderOverview(fixture());
+  assert.equal(a.elements.get('economyChecks').checked, true);
+  a.setSession();
+  a.elements.get('economyChecks').checked = false;
+  await a.elements.get('economyChecks').listeners.change();
+  const save = a.calls.find(c => c.url === '/api/probe-mode');
+  assert.equal(save.options.method, 'PUT');
+  assert.deepEqual(JSON.parse(save.options.body), { economy_checks: false });
+});
 test('URL Test shows live site progress and a completed report', async () => {
   const a = await app();
   const report = { tag: 'main--VL-fi', time: '2026-09-26T00:00:00Z', passed: false, progress_known: true, results: [
@@ -131,4 +142,7 @@ test('URL Test shows live site progress and a completed report', async () => {
   assert.match(a.elements.get('resultBadge').textContent, /Прервано/);
   assert.match(a.elements.get('resultList').textContent, /Не проверено/);
   assert.equal(a.elements.get('downloadReportButton').disabled, false);
+  a.renderResults({ ...report, mode: 'main_xray', results: [{ site: 'https://example.com/', ok: false, completed: true, status: 200, reason: 'маршрут обошёл ключ' }] });
+  assert.match(a.elements.get('resultList').textContent, /маршрут обошёл ключ/);
+  assert.match(a.elements.get('resultSummary').textContent, /основной Xray/);
 });

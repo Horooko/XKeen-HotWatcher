@@ -252,6 +252,57 @@ func (x Xray) Probe(n Node) error {
 }
 
 func (x Xray) ProbeLatency(n Node) (time.Duration, error) {
+	economy, err := x.C.EconomyChecks()
+	if err != nil {
+		return 0, err
+	}
+	if economy {
+		return x.probeLatencyLive(n)
+	}
+	return x.probeLatencyIsolated(n)
+}
+
+func (x Xray) probeLatencyLive(n Node) (time.Duration, error) {
+	var latency time.Duration
+	err := x.withLiveProbe(n, func(proxy, control *url.URL) error {
+		tc, err := tlsConfig(x.C)
+		if err != nil {
+			return err
+		}
+		transport := &http.Transport{Proxy: http.ProxyURL(proxy), TLSClientConfig: tc, DisableKeepAlives: true}
+		defer transport.CloseIdleConnections()
+		controlTransport := &http.Transport{Proxy: http.ProxyURL(control), TLSClientConfig: tc, DisableKeepAlives: true}
+		defer controlTransport.CloseIdleConnections()
+		client := &http.Client{Transport: transport, Timeout: time.Duration(x.C.ProbeTimeoutSeconds) * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("probe redirect refused") }}
+		controlClient := &http.Client{Transport: controlTransport, Timeout: 3 * time.Second, CheckRedirect: client.CheckRedirect}
+		for _, target := range x.C.ProbeURLs {
+			req, err := http.NewRequest("GET", target, nil)
+			if err != nil {
+				continue
+			}
+			req.Header.Set("User-Agent", "HotWatcher-Probe/"+Version)
+			started := time.Now()
+			res, err := client.Do(req)
+			if err != nil {
+				continue
+			}
+			io.Copy(io.Discard, io.LimitReader(res.Body, 4096))
+			res.Body.Close()
+			if res.StatusCode == 204 {
+				measured := time.Since(started)
+				if controlRouteOpens(controlClient, req) {
+					return errors.New("маршрутизация основного Xray обходит проверяемый ключ")
+				}
+				latency = measured
+				return nil
+			}
+		}
+		return errors.New("ключ не открыл HTTPS-адрес проверки со статусом 204")
+	})
+	return latency, err
+}
+
+func (x Xray) probeLatencyIsolated(n Node) (time.Duration, error) {
 	ln, e := net.Listen("tcp", "127.0.0.1:0")
 	if e != nil {
 		return 0, errors.New("cannot reserve loopback probe port")

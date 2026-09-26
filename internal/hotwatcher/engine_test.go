@@ -544,7 +544,7 @@ func TestCheckKeySwitchesOnlyWhenActiveFails(t *testing.T) {
 	}
 }
 
-func TestCheckKeyTriesNextPeerIfFastestFailsFinalProbe(t *testing.T) {
+func TestCheckKeyDoesNotURLTestAnotherPeerIfChosenOneFails(t *testing.T) {
 	e, r, raw := setupEngine(t)
 	*raw = uri(testUUID, "FI") + "\n" + uri("00000000-0000-4000-8000-000000000002", "DE") + "\n" + uri("00000000-0000-4000-8000-000000000003", "US")
 	if err := e.Sync(true); err != nil {
@@ -561,8 +561,8 @@ func TestCheckKeyTriesNextPeerIfFastestFailsFinalProbe(t *testing.T) {
 	r.latencies = map[string]time.Duration{peers[0]: 10 * time.Millisecond, peers[1]: 30 * time.Millisecond}
 	r.probeFailsOn = map[string]int{peers[0]: r.probeCounts[peers[0]] + 2}
 	selected, err := e.CheckKey()
-	if err != nil || selected != peers[1] || r.override != peers[1] || e.pending() {
-		t.Fatal("second verified peer not selected after fastest flapped", selected, err)
+	if err == nil || selected != "" || r.override != s.Selected || e.pending() {
+		t.Fatal("another peer was selected after chosen peer failed", selected, err)
 	}
 }
 

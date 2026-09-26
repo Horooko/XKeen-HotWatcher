@@ -22,6 +22,7 @@ type URLTestResult struct {
 
 type URLTestReport struct {
 	Tag           string          `json:"tag"`
+	Mode          string          `json:"mode,omitempty"`
 	Time          time.Time       `json:"time"`
 	Passed        bool            `json:"passed"`
 	ProgressKnown bool            `json:"progress_known,omitempty"`
@@ -169,6 +170,22 @@ func (e *Engine) URLTestKeyWithProgress(tag string, progress func(URLTestReport)
 	}
 	if tag == "" {
 		tag = s.Selected
+	}
+	economy, err := e.C.EconomyChecks()
+	if err != nil {
+		return URLTestReport{}, err
+	}
+	if economy && tag != s.Selected {
+		return URLTestReport{}, errors.New("экономная проверка использует только выбранный ключ; сначала выберите его")
+	}
+	if economy {
+		balance, err := e.R.Balance()
+		if err != nil {
+			return URLTestReport{}, fmt.Errorf("не удалось проверить активный маршрут Xray: %w", err)
+		}
+		if balance.Override != s.Selected {
+			return URLTestReport{}, errors.New("активный маршрут Xray расходится с выбранным ключом; выполните reconcile")
+		}
 	}
 	node, ok := findNode(s.Active, tag)
 	if !ok {

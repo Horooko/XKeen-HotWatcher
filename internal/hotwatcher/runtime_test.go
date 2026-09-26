@@ -135,15 +135,19 @@ func fakeProcessRuntime(t *testing.T) Xray {
 	}
 	c := Defaults()
 	c.XrayBinary = binary
-	c.StateDir = dir
+	c.StateDir = filepath.Join(dir, "state")
 	c.ConfigDir = filepath.Join(dir, "configs")
 	c.AssetDir = dir
 	c.ProbeTimeoutSeconds = 2
 	c.APITimeoutSeconds = 2
 	c.ProbeURLs = []string{"http://127.0.0.1:1/probe"}
 	c.AllowLoopbackHTTP = true
+	os.Mkdir(c.StateDir, 0700)
 	os.Mkdir(c.ConfigDir, 0700)
 	os.WriteFile(filepath.Join(c.ConfigDir, "01_log.json"), []byte(`{"log":{"loglevel":"none"}}`), 0600)
+	if err := New(c).SetEconomyChecks(false); err != nil {
+		t.Fatal(err)
+	}
 	return Xray{c}
 }
 func TestRuntimeCLIAdapterAndEnvironmentIsolation(t *testing.T) {
