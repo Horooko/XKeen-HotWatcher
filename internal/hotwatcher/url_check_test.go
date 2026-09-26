@@ -7,6 +7,44 @@ import (
 	"time"
 )
 
+type progressRuntime struct{ *fakeRuntime }
+
+func (r progressRuntime) URLTestWithProgress(node Node, sites []string, progress func(URLTestReport)) (URLTestReport, error) {
+	result := URLTestReport{Tag: node.Tag, Time: time.Now().UTC(), Results: make([]URLTestResult, len(sites))}
+	for i, site := range sites {
+		result.Results[i] = URLTestResult{Site: site}
+	}
+	progress(cloneURLTestReport(result))
+	for i := range result.Results {
+		result.Results[i].OK, result.Results[i].Completed = true, true
+		progress(cloneURLTestReport(result))
+	}
+	result.Passed = true
+	return result, nil
+}
+
+func TestURLTestPublishesIndependentProgressSnapshots(t *testing.T) {
+	e, runtime, _ := setupEngine(t)
+	if err := e.Sync(true); err != nil {
+		t.Fatal(err)
+	}
+	e.R = progressRuntime{runtime}
+	var snapshots []URLTestReport
+	report, err := e.URLTestKeyWithProgress("", func(snapshot URLTestReport) {
+		snapshots = append(snapshots, snapshot)
+	})
+	if err != nil || !report.Passed || len(snapshots) != len(report.Results)+1 {
+		t.Fatalf("progress was not published: %v, %+v, %d", err, report, len(snapshots))
+	}
+	if snapshots[0].Results[0].Completed || !snapshots[1].Results[0].Completed || snapshots[1].Results[1].Completed {
+		t.Fatal("progress snapshots were mutated after publication")
+	}
+	stored, err := e.LastURLTest()
+	if err != nil || stored == nil || !stored.Passed {
+		t.Fatalf("final report was not saved: %+v, %v", stored, err)
+	}
+}
+
 func TestURLTestSitesEditableAndSafe(t *testing.T) {
 	e, _, _ := setupEngine(t)
 	defaults, err := e.URLTestSites()

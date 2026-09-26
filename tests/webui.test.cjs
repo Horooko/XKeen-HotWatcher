@@ -52,7 +52,7 @@ async function app() {
     }
   };
   const source = fs.readFileSync(process.env.HW_UI_SOURCE || path.join(__dirname, '../cmd/hotwatcher/ui/app.js'), 'utf8');
-  const instrumented = source.replace(/\}\)\(\);\s*$/, 'globalThis.testing = { renderOverview, renderKeys, refresh, refreshSystem, setSession: () => { csrf = "test"; }, busy: () => { activeJob = 1; sitesDirty = true; } };\n})();');
+  const instrumented = source.replace(/\}\)\(\);\s*$/, 'globalThis.testing = { renderOverview, renderKeys, renderResults, refresh, refreshSystem, setSession: () => { csrf = "test"; }, busy: () => { activeJob = 1; sitesDirty = true; } };\n})();');
   assert.notEqual(source, instrumented, 'test hook could not be installed');
   vm.runInNewContext(instrumented, context, { filename: 'app.js' });
   await new Promise(resolve => setImmediate(resolve));
@@ -114,4 +114,21 @@ test('empty key inventories are rendered without throwing', async () => {
   a.renderOverview(fixture({ keys: { Keys: [] } }));
   assert.equal(a.elements.get('keysBody').children.length, 0);
   assert.equal(a.elements.get('keysEmpty').hidden, false);
+});
+test('URL Test shows live site progress and a completed report', async () => {
+  const a = await app();
+  const report = { tag: 'main--VL-fi', time: '2026-09-26T00:00:00Z', passed: false, progress_known: true, results: [
+    { site: 'https://github.com/', ok: true, completed: true, status: 200, latency_ms: 45 },
+    { site: 'https://chatgpt.com/', ok: false, completed: true, status: 403 },
+    { site: 'https://youtube.com/', ok: false, reason: 'проверка не завершена' }
+  ] };
+  a.renderResults(report, true);
+  assert.match(a.elements.get('resultSummary').textContent, /Проверено 2 из 3 · открывается 1 · не открывается 1/);
+  assert.match(a.elements.get('resultList').textContent, /HTTP 403/);
+  assert.match(a.elements.get('resultList').textContent, /Ожидает проверки/);
+  assert.equal(a.elements.get('downloadReportButton').disabled, true);
+  a.renderResults(report);
+  assert.match(a.elements.get('resultBadge').textContent, /Прервано/);
+  assert.match(a.elements.get('resultList').textContent, /Не проверено/);
+  assert.equal(a.elements.get('downloadReportButton').disabled, false);
 });

@@ -18,12 +18,19 @@ import (
 // URLTest starts one isolated Xray for this key, then checks every configured
 // site through its loopback HTTP proxy. No production listener is changed.
 func (x Xray) URLTest(n Node, sites []string) (URLTestReport, error) {
-	report := URLTestReport{Tag: n.Tag, Time: time.Now().UTC(), Results: make([]URLTestResult, len(sites))}
+	return x.URLTestWithProgress(n, sites, nil)
+}
+
+func (x Xray) URLTestWithProgress(n Node, sites []string, progress func(URLTestReport)) (URLTestReport, error) {
+	report := URLTestReport{Tag: n.Tag, Time: time.Now().UTC(), ProgressKnown: true, Results: make([]URLTestResult, len(sites))}
 	if len(sites) == 0 || len(sites) > 12 {
 		return report, errors.New("URL Test: неверное количество сайтов")
 	}
 	for i, site := range sites {
 		report.Results[i] = URLTestResult{Site: site, Reason: "проверка не завершена"}
+	}
+	if progress != nil {
+		progress(cloneURLTestReport(report))
 	}
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -99,6 +106,16 @@ func (x Xray) URLTest(n Node, sites []string) (URLTestReport, error) {
 		},
 	}
 	var wg sync.WaitGroup
+	var resultsMu sync.Mutex
+	publish := func(i int, item URLTestResult) {
+		resultsMu.Lock()
+		item.Completed = true
+		report.Results[i] = item
+		if progress != nil {
+			progress(cloneURLTestReport(report))
+		}
+		resultsMu.Unlock()
+	}
 	sem := make(chan struct{}, 3)
 	for i, site := range sites {
 		wg.Add(1)
@@ -110,7 +127,7 @@ func (x Xray) URLTest(n Node, sites []string) (URLTestReport, error) {
 			request, requestErr := http.NewRequestWithContext(ctx, http.MethodGet, site, nil)
 			if requestErr != nil {
 				item.Reason = "неверный адрес"
-				report.Results[i] = item
+				publish(i, item)
 				return
 			}
 			request.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux aarch64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36")
@@ -130,7 +147,7 @@ func (x Xray) URLTest(n Node, sites []string) (URLTestReport, error) {
 					item.Reason = "HTTP-ошибка"
 				}
 			}
-			report.Results[i] = item
+			publish(i, item)
 		}(i, site)
 	}
 	wg.Wait()
@@ -146,4 +163,9 @@ func (x Xray) URLTest(n Node, sites []string) (URLTestReport, error) {
 	default:
 	}
 	return report, nil
+}
+
+func cloneURLTestReport(report URLTestReport) URLTestReport {
+	report.Results = append([]URLTestResult(nil), report.Results...)
+	return report
 }

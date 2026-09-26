@@ -512,7 +512,20 @@ func (w *webUI) runAction(id uint64, action, tag string) {
 			case "forget-emergency":
 				return w.engine.RemoveEmergency()
 			case "url-test":
-				r, err := w.engine.URLTestKey(tag)
+				r, err := w.engine.URLTestKeyWithProgress(tag, func(snapshot hw.URLTestReport) {
+					w.mu.Lock()
+					if w.job.ID == id {
+						w.job.Report = &snapshot
+						completed := 0
+						for _, item := range snapshot.Results {
+							if item.Completed {
+								completed++
+							}
+						}
+						w.job.Message = fmt.Sprintf("URL Test: проверено %d из %d сайтов", completed, len(snapshot.Results))
+					}
+					w.mu.Unlock()
+				})
 				report = &r
 				return err
 			}
