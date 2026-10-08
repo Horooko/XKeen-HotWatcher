@@ -14,7 +14,9 @@
   let webJob = null;
   let dnsRefreshing = false;
   let previousLAN = null;
-  const pageTitles = { overview: "Обзор подключения", keys: "Управление ключами", "url-test": "Проверка сайтов", dns: "DNS Xray", system: "XKeen и Xray", updates: "Обновления" };
+  let statusReport = null;
+  let statusReportLoading = false;
+  const pageTitles = { overview: "Обзор подключения", keys: "Управление ключами", "url-test": "Проверка сайтов", dns: "DNS Xray", statuses: "Отчёт о состоянии", system: "XKeen и Xray", updates: "Обновления" };
 
   async function api(path, options = {}) {
     let response;
@@ -117,6 +119,9 @@
     text("operationIcon", state === "succeeded" ? "✓" : state === "failed" ? "!" : "↻");
   }
   function showLogin(error) {
+    statusReport = null;
+    $("statusReportActions").hidden = true;
+    $("statusReportSections").replaceChildren();
     $("loginScreen").hidden = false;
     $("appScreen").hidden = true;
     if (error) { $("loginError").hidden = false; text("loginError", error); }
@@ -148,6 +153,47 @@
     if (className) el.className = className;
     if (content != null) el.textContent = content;
     return el;
+  }
+  function renderStatusReport(report) {
+    const sections = $("statusReportSections");
+    sections.replaceChildren();
+    for (const section of Array.isArray(report.sections) ? report.sections : []) {
+      const card = make("section", "panel status-report-section");
+      card.append(make("h3", "", section.title || "Раздел"));
+      card.append(make("pre", "", Array.isArray(section.lines) ? section.lines.join("\n") : "Нет данных"));
+      sections.append(card);
+    }
+    text("statusReportState", "Собран " + dateLabel(report.generated_at) + " · " + sections.children.length + " разделов. Снимок не обновляется автоматически.");
+    $("statusReportActions").hidden = false;
+  }
+  async function generateStatusReport() {
+    if (statusReportLoading) return;
+    statusReportLoading = true;
+    statusReport = null;
+    $("statusReportActions").hidden = true;
+    $("statusReportSections").replaceChildren();
+    $("generateStatusReportButton").disabled = true;
+    text("statusReportState", "Собираю отчёт. Проверка выбранного ключа может занять несколько секунд…");
+    try {
+      const report = await api("/api/diagnostics/report");
+      if (!Array.isArray(report.sections) || typeof report.text !== "string") throw new Error("Сервер вернул неполный отчёт");
+      statusReport = report;
+      renderStatusReport(report);
+    } catch (error) {
+      text("statusReportState", "Не удалось собрать отчёт: " + error.message);
+      if (error.status !== 401) showBanner("Отчёт о состоянии", error.message, "failed");
+    } finally { statusReportLoading = false; $("generateStatusReportButton").disabled = false; }
+  }
+  function downloadStatusReport(format) {
+    if (!statusReport) return;
+    const content = format === "json" ? JSON.stringify(statusReport, null, 2) + "\n" : statusReport.text;
+    const filename = "hotwatcher-status-" + String(statusReport.generated_at || "report").slice(0, 19).replace(/[^0-9A-Za-z]/g, "-") + "." + format;
+    const link = document.createElement("a");
+    const fileURL = URL.createObjectURL(new Blob([content], { type: format === "json" ? "application/json;charset=utf-8" : "text/plain;charset=utf-8" }));
+    link.href = fileURL;
+    link.download = filename;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(fileURL), 1000);
   }
   // FetchedKey is embedded in KeyInventoryEntry. Its JSON fields are lowercase,
   // while the inventory flags keep their Go names. Accept legacy clients too.
@@ -621,6 +667,9 @@
   $("testSelectedButton").addEventListener("click", () => startAction("url-test"));
   $("economyChecks").addEventListener("change", saveProbeMode);
   $("downloadReportButton").addEventListener("click", downloadReport);
+  $("generateStatusReportButton").addEventListener("click", generateStatusReport);
+  $("downloadStatusTextButton").addEventListener("click", () => downloadStatusReport("txt"));
+  $("downloadStatusJSONButton").addEventListener("click", () => downloadStatusReport("json"));
   $("pinSelectedButton").addEventListener("click", () => { const key = inventoryKeys(current?.keys).find((item) => item.Selected); if (key) startAction("pin", key.Tag); });
   $("autoButton").addEventListener("click", () => startAction("auto"));
   $("emergencyButton").addEventListener("click", startEmergency);

@@ -75,6 +75,22 @@ test('real Go JSON casing renders names, opaque tags, verification and actions',
   const action = a.calls.find(c => c.url === '/api/action');
   assert.deepEqual(JSON.parse(action.options.body), { action: 'pin', tag: 'main--VL-fi' });
 });
+test('status report is generated only on demand, rendered and downloadable', async () => {
+  const a = await app();
+  assert.equal(a.calls.some(call => call.url === '/api/diagnostics/report'), false);
+  const report = { generated_at: '2026-10-08T08:00:00Z', sections: [{ title: 'Процессы и версии', lines: ['Xray: 1 процесс', 'Hot Watcher: 0.3.5'] }, { title: 'Активный ключ', lines: ['Проверка: 78 мс'] }], text: 'Hot Watcher\nXray: 1 процесс\n' };
+  a.context.fetch = async (url) => { a.calls.push({ url }); return { ok: true, json: async () => report }; };
+  a.setSession();
+  await a.elements.get('generateStatusReportButton').listeners.click();
+  assert.equal(a.calls.filter(call => call.url === '/api/diagnostics/report').length, 1);
+  assert.match(a.elements.get('statusReportSections').textContent, /78 мс/);
+  assert.equal(a.elements.get('statusReportActions').hidden, false);
+  a.elements.get('downloadStatusTextButton').listeners.click();
+  a.elements.get('downloadStatusJSONButton').listeners.click();
+  assert.equal(a.downloads.length, 2);
+  assert.equal(await a.downloads[0].text(), report.text);
+  assert.deepEqual(JSON.parse(await a.downloads[1].text()), report);
+});
 test('auto mode preserves an emergency tagged selection and shows why key choice is delayed', async () => {
   const a = await app();
   const keys = Array.from({ length: 19 }, (_, i) => ({ tag: `main--VL-${i}`, name: i === 0 ? '-WestKost' : `Ключ ${i}`, Selected: i === 0, Applied: true, Emergency: i === 0, checked: false, verified: false }));
