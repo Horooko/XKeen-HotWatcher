@@ -295,6 +295,8 @@ func (w *webUI) generateStatusReport(ctx context.Context) statusReport {
 	}
 	report.add("Перехват LAN (счётчики накопительные)", lanLines...)
 	report.add("Netfilter XKeen (независимая проверка)", firewallEvidence(ctx, w.config.ConfigDir)...)
+	report.add("Предпосылки netfilter XKeen", xkeenHookPreconditions()...)
+	report.add("Системный журнал netfilter XKeen", xkeenSyslogEvidence(ctx)...)
 	report.add("Сокеты входов Xray", transparentListenerReport(lan.TCP.ExpectedPort, lan.UDP.ExpectedPort)...)
 	report.add("Маршруты трафика LAN в Xray", routingSummary(w.config.ConfigDir)...)
 	ipBinary := findIPTablesSave("ip")

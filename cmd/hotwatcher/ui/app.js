@@ -13,7 +13,10 @@
   let currentActivity = null;
   let webJob = null;
   let dnsRefreshing = false;
+  let dnsCatalog = [];
+  let dnsCatalogDirty = false;
   let previousLAN = null;
+  let currentLAN = null;
   let statusReport = null;
   let statusReportLoading = false;
   const pageTitles = { overview: "Обзор подключения", keys: "Управление ключами", "url-test": "Проверка сайтов", dns: "DNS Xray", statuses: "Отчёт о состоянии", system: "XKeen и Xray", updates: "Обновления" };
@@ -119,6 +122,9 @@
     text("operationIcon", state === "succeeded" ? "✓" : state === "failed" ? "!" : "↻");
   }
   function showLogin(error) {
+    dnsCatalogDirty = false;
+    currentLAN = null;
+    previousLAN = null;
     statusReport = null;
     $("statusReportActions").hidden = true;
     $("statusReportSections").replaceChildren();
@@ -373,9 +379,10 @@
     badge($("connectionBadge"), online ? processRunning === true ? "API доступен" : "API доступен · процесс не подтверждён" : !checked ? "Проверяю" : "Управление недоступно", online && processRunning === true ? "good" : "neutral");
     if (data.system) renderSystem(system);
     const pinMismatch = online && status.adopted && (status.selected_present === false || status.balancer_pin_matches === false);
-    const diagnosis = !checked ? "Проверяю процесс Xray и API." : processRunning === false ? "Xray не запущен. Выбранный ключ сохранён в файле, но сейчас не обслуживает трафик. Проверьте запуск XKeen и ошибки Xray." : processRunning !== true ? "Основной процесс Xray не удалось подтвердить. Даже если API отвечает, состояние ключа и маршрута пока неизвестно." : !online ? "Xray запущен, но API управления недоступен. Проверка ключа через HotWatcher невозможна; проверьте конфигурацию API." : pinMismatch ? "Xray запущен, но сохранённый ключ сейчас не закреплён в балансировщике. Выполните «Согласовать Xray» и проверьте отдельные HTTPS-адреса." : "Xray и API управления доступны. URL Test проверяет только отдельные HTTPS-адреса; работу приложений он не подтверждает.";
+    const lanMissing = currentLAN?.tcp?.known === true && currentLAN?.tcp?.present === false && currentLAN?.udp?.known === true && currentLAN?.udp?.present === false;
+    const diagnosis = !checked ? "Проверяю процесс Xray и API." : processRunning === false ? "Xray не запущен. Выбранный ключ сохранён в файле, но сейчас не обслуживает трафик. Проверьте запуск XKeen и ошибки Xray." : processRunning !== true ? "Основной процесс Xray не удалось подтвердить. Даже если API отвечает, состояние ключа и маршрута пока неизвестно." : lanMissing ? "Перехват трафика LAN отсутствует: правила XKeen не направляют соединения устройств в Xray. Откройте «Система» и восстановите правила XKeen. Проверки ключей и DNS эту проблему не исправят." : !online ? "Xray запущен, но API управления недоступен. Проверка ключа через HotWatcher невозможна; проверьте конфигурацию API." : pinMismatch ? "Xray запущен, но сохранённый ключ сейчас не закреплён в балансировщике. Выполните «Согласовать Xray» и проверьте отдельные HTTPS-адреса." : "Xray и API управления доступны. URL Test проверяет только отдельные HTTPS-адреса; работу приложений он не подтверждает.";
     text("systemDiagnosis", diagnosis);
-    $("systemDiagnosis").className = "system-diagnosis" + (checked && (processRunning === false || !online || pinMismatch) ? " failed" : checked && online && processRunning === true ? " ready" : "");
+    $("systemDiagnosis").className = "system-diagnosis" + (checked && (processRunning === false || lanMissing || !online || pinMismatch) ? " failed" : checked && online && processRunning === true ? " ready" : "");
     text("selectedName", selected?.Name || (status.adopted ? "Ключ не найден" : "Не подключено"));
     text("selectedTag", selected?.Tag || status.selected || "—");
     $("selectedOrigin").hidden = !selected?.Emergency;
@@ -435,6 +442,7 @@
   }
   function renderLAN(lan) {
     if (!lan) return;
+    currentLAN = lan;
     const previous = previousLAN && previousLAN.checked_at !== lan.checked_at ? previousLAN : null;
     const reasons = { xray_inbound_unknown: "Не найден подходящий вход Xray в 03_inbounds.json", iptables_save_unavailable: "iptables-save недоступен", rules_unavailable: "Не удалось прочитать правила", xkeen_chain_missing: "Цепочка xkeen не найдена в проверенном наборе правил", prerouting_jump_missing: "Нет перехода из PREROUTING", redirect_target_missing: "Нет перенаправления на порт Xray", route_disconnected: "Правило не связано с входом LAN" };
     text("lanChecked", "Правила проверены: " + dateLabel(lan.checked_at) + ". Счётчики суммарные для всей сети.");
@@ -450,13 +458,16 @@
       text("lan" + name + "Detail", detail);
     }
     if (!previousLAN || previousLAN.checked_at !== lan.checked_at) previousLAN = lan;
+    $("repairLANButton").disabled = !["tcp", "udp", "tcp_ipv6", "udp_ipv6"].some(key => lan[key]?.known === true && lan[key]?.present === false) || current?.system?.xray_running !== true;
   }
   function renderSystem(state) {
     const checked = !!state.checked_at && !state.checked_at.startsWith("0001");
-    const label = !checked ? "Проверяю" : !state.installed ? "Не найден" : state.command_ok ? "Статус получен" : "Установлен, ошибка команды статуса";
+    const lan = state.lan_interception || currentLAN;
+    const lanMissing = lan?.tcp?.known === true && lan?.tcp?.present === false && lan?.udp?.known === true && lan?.udp?.present === false;
+    const label = !checked ? "Проверяю" : !state.installed ? "Не найден" : lanMissing ? "Нет перехвата LAN" : state.command_ok ? "Статус получен" : "Установлен, ошибка команды статуса";
     text("xkeenState", state.xray_running === false ? "Xray остановлен" : label);
-    text("xkeenTopStatus", "XKeen: " + (!checked ? "проверяю" : !state.installed ? "не найден" : state.xray_running === false ? "Xray остановлен" : state.command_ok ? "команда доступна" : "ошибка статуса"));
-    $("xkeenTopStatus").className = "top-status" + (checked && state.xray_running === false ? " offline" : checked && !state.installed ? " offline" : "");
+    text("xkeenTopStatus", "XKeen: " + (!checked ? "проверяю" : !state.installed ? "не найден" : state.xray_running === false ? "Xray остановлен" : lanMissing ? "нет перехвата LAN" : state.command_ok ? "команда доступна" : "ошибка статуса"));
+    $("xkeenTopStatus").className = "top-status" + (checked && (state.xray_running === false || !state.installed || lanMissing) ? " offline" : "");
     text("xkeenChecked", checked ? "Проверено: " + dateLabel(state.checked_at) : "Проверка ещё не завершена");
     text("xkeenStatusText", (state.status || []).join("\n") || "Статус пока недоступен");
     text("xkeenLogText", (state.detached_log || []).join("\n") || "Фоновых команд start/stop нет.");
@@ -467,7 +478,7 @@
     text("xrayLogText", (state.xray_error_log || []).join("\n") || (logSettingsUnknown ? "Не удалось прочитать настройки журнала Xray." : errorPathUnknown ? "Путь журнала ошибок в конфигурации Xray не распознан." : state.xray_log_level === "none" ? "Журнал ошибок отключён в конфигурации Xray: loglevel = none." : !state.xray_error_path ? "Запись в файл отключена в конфигурации Xray." : "Журнал ошибок пуст или не создан. Это не подтверждает исправность Xray."));
     text("xrayAccessLogDetail", accessPathUnknown ? "Путь не определён" : state.xray_access_path || "Файл отключён");
     text("xrayAccessLogText", (state.xray_access_log || []).join("\n") || (logSettingsUnknown ? "Не удалось прочитать настройки журнала Xray." : accessPathUnknown ? "Путь журнала доступа в конфигурации Xray не распознан." : !state.xray_access_path ? "Журнал доступа отключён в конфигурации Xray." : "Журнал доступа пуст или не создан."));
-    renderLAN(state.lan_interception);
+    renderLAN(lan);
   }
   async function refreshSystem() {
     if (systemRefreshing) return;
@@ -485,38 +496,44 @@
     text("dnsAppliedProviders", "Выбраны проверкой: " + (state.applied_provider_ids?.length ? state.applied_provider_ids.join(", ") : "—"));
     text("dnsParallel", "Параллельные запросы: " + (state.parallel_queries ? "включены" : "выключены"));
     text("dnsNote", state.note || (state.runtime_activation_unverified ? "Неизвестно, загрузил ли работающий Xray изменения. Требуется ручной перезапуск." : "Показано состояние файла Xray."));
-    const list = $("dnsProviderList");
-    list.replaceChildren();
-    for (const provider of state.providers || []) {
-      const label = document.createElement("label");
-      label.className = "dns-provider";
-      const checkbox = document.createElement("input");
-      checkbox.type = "checkbox";
-      checkbox.value = provider.id;
-      checkbox.checked = provider.selected === true || (provider.selected == null && state.selected_provider_ids?.includes(provider.id));
-      checkbox.disabled = provider.eligible === false;
-      const detail = document.createElement("span");
-      detail.className = "dns-provider-detail";
-      const name = document.createElement("strong");
-      name.textContent = provider.name;
-      const endpoint = document.createElement("small");
-      endpoint.textContent = provider.reason ? `${provider.url} · ${provider.reason}` : provider.url;
-      detail.append(name, endpoint);
-      label.append(checkbox, detail);
-      list.append(label);
+    dnsCatalog = state.providers || [];
+    const catalogLines = ["# Удалите # только у поддерживаемых адресов; неизвестные и несовместимые адреса отклоняются."];
+    let lastName = "";
+    for (const provider of dnsCatalog) {
+      if (provider.name !== lastName) { catalogLines.push("", "# " + provider.name); lastName = provider.name; }
+      const selected = provider.selected === true || (provider.selected == null && state.selected_provider_ids?.includes(provider.id));
+      catalogLines.push((provider.eligible === true && selected ? "" : "# ") + provider.url);
     }
+    if (!dnsCatalogDirty) $("dnsCatalogText").value = catalogLines.join("\n");
+    const eligible = dnsCatalog.filter(provider => provider.eligible === true).length;
+    text("dnsCatalogInfo", `${dnsCatalog.length} адресов в каталоге, ${eligible} поддерживаемых IP DoH. Редактирование выбора сохраняется после проверки; неизвестные строки и несовместимые протоколы отклоняются.`);
     $("dnsAutoSelect").checked = state.auto_selection_enabled !== false;
     $("dnsOnButton").disabled = false;
     text("dnsOnButton", state.managed ? "Перепроверить и обновить DNS auto" : "Проверить и включить DNS auto");
     $("dnsOffButton").disabled = !state.managed;
   }
   function selectedDNSProviders() {
-    return Array.from($("dnsProviderList").querySelectorAll("input"))
-      .filter(input => input.checked && !input.disabled)
-      .map(input => input.value);
+    const catalog = new Map(dnsCatalog.map(provider => [provider.url, provider]));
+    const selected = [];
+    const seen = new Set();
+    const lines = $("dnsCatalogText").value.split(/\r?\n/);
+    if (lines.length > 128 || $("dnsCatalogText").value.length > 16384) throw new Error("Список DNS слишком длинный (максимум 128 строк и 16 КБ).");
+    for (let index = 0; index < lines.length; index++) {
+      const address = lines[index].trim();
+      if (!address || address.startsWith("#")) continue;
+      const provider = catalog.get(address);
+      if (!provider) throw new Error(`Строка ${index + 1}: неизвестный адрес «${address}». Разрешены только адреса из каталога.`);
+      if (provider.eligible !== true) throw new Error(`Строка ${index + 1}: ${address} — ${provider.reason || "не поддерживается DNS auto"}.`);
+      if (seen.has(provider.id)) throw new Error(`Строка ${index + 1}: ${address} указан дважды.`);
+      seen.add(provider.id);
+      selected.push(provider.id);
+    }
+    return selected;
   }
   function startDNSAction(action) {
-    const providers = selectedDNSProviders();
+    let providers;
+    try { providers = selectedDNSProviders(); }
+    catch (error) { showBanner("Список DNS", error.message, "failed"); return; }
     if (!providers.length) { showBanner("Провайдеры DNS", "Выберите хотя бы один DNS-сервер.", "failed"); return; }
     if (action === "dns-on" && providers.length < 2) { showBanner("Провайдеры DNS", "Для DNS auto выберите хотя бы два сервера. Оба должны ответить при проверке.", "failed"); return; }
     startAction(action, "", { providers, auto_select: !!$("dnsAutoSelect").checked });
@@ -548,6 +565,21 @@
       lines = [format("Xray -xtest", result.config_test), format("XKeen PBR", result.pbr_status), format("Entware proxy", result.proxy_status), `Метка генерируемых VLESS: ${result.outbound_mark || "не задана"}`];
       if (!result.config_test?.ok) lines.push("Конфигурация Xray не прошла проверку.");
       lines.push("Успех -xtest не проверяет strict PBR и не доказывает запуск Xray.");
+    } else if (job.action === "lan-repair") {
+      const path = (status, key) => status?.[key]?.known ? status[key].present ? "правило найдено" : "правило отсутствует" : "проверка недоступна";
+      lines = [
+        `Результат: ${result.recovered ? "правила восстановлены" : "перехват не подтверждён"}`,
+        `Способ: ${result.mode === "netfilter_hook" ? "хук XKeen" : result.mode === "xkeen_start_existing_xray" ? "повторная генерация XKeen" : result.mode === "already_present" ? "правила уже были" : "не запускалось"}`,
+        `Основной Xray PID: ${result.main_xray_pid || "не определён"}`,
+        `IPv4 TCP: ${path(result.before, "tcp")} → ${path(result.after, "tcp")}`,
+        `IPv4 UDP: ${path(result.before, "udp")} → ${path(result.after, "udp")}`,
+        `IPv6 TCP: ${path(result.before, "tcp_ipv6")} → ${path(result.after, "tcp_ipv6")}`,
+        `IPv6 UDP: ${path(result.before, "udp_ipv6")} → ${path(result.after, "udp_ipv6")}`
+      ];
+      if (result.command_output?.length) lines.push("Вывод XKeen:", ...result.command_output.slice(-12));
+      if (result.syslog_before?.length) lines.push("Системный журнал до действия:", ...result.syslog_before.slice(-8));
+      if (result.syslog_after?.length) lines.push("Последние сообщения netfilter:", ...result.syslog_after.slice(-8));
+      if (!result.recovered) lines.push("Соберите новый отчёт на вкладке «Статусы» для точной причины.");
     } else if (job.action === "plan") {
       lines = [`Поддерживаемых ключей: ${result.supported_nodes ?? 0}`, `Новых или изменённых: ${result.new_or_changed ?? 0}`, `Не-VLESS записей пропущено: ${result.ignored_non_vless ?? 0}`, `Конфигурация изменится: ${result.configuration_changed ? "да" : "нет"}`];
     } else if (job.action === "keys-check") {
@@ -584,7 +616,7 @@
     } catch (error) { showBanner("Обновления", error.message, "failed"); }
   }
   async function startAction(action, tag = "", extra = {}) {
-    const names = { sync: "Синхронизация", "check-key": "Проверка ключа", "url-test": "URL Test", select: "Выбор ключа", pin: "Закрепление ключа", auto: "Автовыбор", "forget-emergency": "Аварийный ключ", "update-enable": "Включение обновлений", "update-check": "Проверка обновлений", "update-install": "Установка обновления", "update-auto": "Автоустановка обновлений", "update-disable": "Отключение обновлений", "update-pause-on": "Пауза установки", "update-pause-off": "Возобновление установки", "update-download": "Загрузка пакета", "update-retry": "Повторная попытка", "dns-test": "Проверка DoH", "dns-verify": "Проверка DNS-маршрутов", "dns-on": "Включение DNS auto", "dns-off": "Откат DNS auto", doctor: "Проверка готовности", "startup-check": "Проверка условий запуска XKeen", "doctor-network": "Диагностика сети", plan: "План подписки", "keys-check": "Проверка ключей", adopt: "Первое подключение", reconcile: "Согласование Xray", gc: "Очистка ключей", recover: "Завершение операции", abort: "Откат операции", "hold-on": "Пауза синхронизации", "hold-off": "Возобновление синхронизации", "url-migrate": "Перенос адреса подписки" };
+    const names = { sync: "Синхронизация", "check-key": "Проверка ключа", "url-test": "URL Test", select: "Выбор ключа", pin: "Закрепление ключа", auto: "Автовыбор", "forget-emergency": "Аварийный ключ", "lan-repair": "Восстановление правил XKeen", "update-enable": "Включение обновлений", "update-check": "Проверка обновлений", "update-install": "Установка обновления", "update-auto": "Автоустановка обновлений", "update-disable": "Отключение обновлений", "update-pause-on": "Пауза установки", "update-pause-off": "Возобновление установки", "update-download": "Загрузка пакета", "update-retry": "Повторная попытка", "dns-test": "Проверка DoH", "dns-verify": "Проверка DNS-маршрутов", "dns-on": "Включение DNS auto", "dns-off": "Откат DNS auto", doctor: "Проверка готовности", "startup-check": "Проверка условий запуска XKeen", "doctor-network": "Диагностика сети", plan: "План подписки", "keys-check": "Проверка ключей", adopt: "Первое подключение", reconcile: "Согласование Xray", gc: "Очистка ключей", recover: "Завершение операции", abort: "Откат операции", "hold-on": "Пауза синхронизации", "hold-off": "Возобновление синхронизации", "url-migrate": "Перенос адреса подписки" };
     try {
       const job = await api("/api/action", { method: "POST", body: JSON.stringify({ action, tag, ...extra }) });
       activeJob = job.id;
@@ -618,6 +650,8 @@
       renderJobResult(job);
       await refresh();
       await refreshActivity();
+      if (job.action === "lan-repair") await refreshSystem();
+      if (job.state === "succeeded" && (job.action === "dns-test" || job.action === "dns-on")) dnsCatalogDirty = false;
       if (activePage() === "dns" || job.action.startsWith("dns-")) await refreshDNS();
       if (activePage() === "updates") await refreshUpdate();
     } catch (error) { if (error.status === 401) return; showBanner("Проверка состояния", error.message, "failed"); setTimeout(pollJob, 2500); }
@@ -710,9 +744,13 @@
   $("emergencyButton").addEventListener("click", startEmergency);
   $("forgetEmergencyButton").addEventListener("click", () => startAction("forget-emergency"));
   $("refreshSystemButton").addEventListener("click", () => { refreshSystem(); refreshActivity(); });
+  $("repairLANButton").addEventListener("click", () => {
+    if (window.confirm("XKeen пересоздаст правила перехвата LAN. Это может кратко прервать соединения. Продолжить?")) startAction("lan-repair");
+  });
   $("stopActivityButton").addEventListener("click", () => controlActivity("/api/activity/stop", "Пауза фоновых задач"));
   $("resumeActivityButton").addEventListener("click", () => controlActivity("/api/activity/resume", "Возобновление фоновых задач"));
 	$("refreshDNSButton").addEventListener("click", refreshDNS);
+  $("dnsCatalogText").addEventListener("input", () => { dnsCatalogDirty = true; });
   $("dnsOnButton").addEventListener("click", () => startDNSAction("dns-on"));
   $("dnsTestButton").addEventListener("click", () => startDNSAction("dns-test"));
 for (const [id, action] of Object.entries({ dnsOffButton: "dns-off", dnsVerifyButton: "dns-verify", doctorButton: "doctor", startupCheckButton: "startup-check", doctorNetworkButton: "doctor-network", planButton: "plan", keysCheckButton: "keys-check", adoptButton: "adopt", reconcileButton: "reconcile", gcButton: "gc", recoverButton: "recover", abortButton: "abort", holdOnButton: "hold-on", holdOffButton: "hold-off", migrateSubscriptionButton: "url-migrate", autoUpdateButton: "update-auto", pauseUpdateButton: "update-disable", pauseInstallButton: "update-pause-on", resumeInstallButton: "update-pause-off", downloadUpdateButton: "update-download", retryUpdateButton: "update-retry" })) {
