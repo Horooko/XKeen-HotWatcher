@@ -2,6 +2,7 @@ package hotwatcher
 
 import (
 	"context"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
@@ -14,6 +15,35 @@ import (
 	"sync"
 	"time"
 )
+
+var (
+	errURLTestUnsafeRedirect   = errors.New("URL Test unsafe redirect")
+	errURLTestExternalRedirect = errors.New("URL Test external redirect")
+)
+
+func urlTestFailureReason(err error) string {
+	if errors.Is(err, errURLTestExternalRedirect) {
+		return "сайт перенаправил на другой домен; конечный адрес не проверен"
+	}
+	if errors.Is(err, errURLTestUnsafeRedirect) {
+		return "сайт перенаправил на неподдерживаемый адрес"
+	}
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return "ошибка DNS при проверке"
+	}
+	var unknownCA x509.UnknownAuthorityError
+	var invalidCert x509.CertificateInvalidError
+	var hostnameErr x509.HostnameError
+	if errors.As(err, &unknownCA) || errors.As(err, &invalidCert) || errors.As(err, &hostnameErr) {
+		return "ошибка сертификата TLS"
+	}
+	var networkErr net.Error
+	if errors.As(err, &networkErr) && networkErr.Timeout() || errors.Is(err, context.DeadlineExceeded) {
+		return "время ожидания истекло"
+	}
+	return "ошибка сетевого соединения"
+}
 
 // URLTest checks every configured site through this key.
 func (x Xray) URLTest(n Node, sites []string) (URLTestReport, error) {
@@ -149,11 +179,11 @@ func (x Xray) runURLTestRequests(ctx context.Context, report URLTestReport, site
 		Timeout:   time.Duration(x.C.ProbeTimeoutSeconds) * time.Second,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= 4 || len(via) == 0 || req.URL.Scheme != "https" || req.URL.User != nil || req.URL.Port() != "" {
-				return errors.New("unsafe redirect")
+				return errURLTestUnsafeRedirect
 			}
 			origin := via[0].URL.Hostname()
 			if req.URL.Hostname() != origin && req.URL.Hostname() != "www."+origin {
-				return errors.New("redirect left test site")
+				return errURLTestExternalRedirect
 			}
 			return nil
 		},
@@ -191,7 +221,11 @@ func (x Xray) runURLTestRequests(ctx context.Context, report URLTestReport, site
 			started := time.Now()
 			response, requestErr := client.Do(request)
 			if requestErr != nil {
-				item.Reason = "сеть, TLS или таймаут"
+				if response != nil {
+					item.Status = response.StatusCode
+					_ = response.Body.Close()
+				}
+				item.Reason = urlTestFailureReason(requestErr)
 			} else {
 				item.Status = response.StatusCode
 				_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))

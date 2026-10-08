@@ -31,15 +31,27 @@ func recoveryCommand(c hw.Config, engine *hw.Engine, args []string) error {
 			return nil
 		}
 		if status.HardSync != nil {
-			_, listErr := engine.R.List()
-			_, balanceErr := engine.R.Balance()
-			if listErr != nil || balanceErr != nil {
+			serverRunning := func() (bool, error) {
+				return hw.XrayServerRunning("/proc", c.XrayBinary, c.ConfigDir, c.StateDir)
+			}
+			running, processErr := serverRunning()
+			if processErr != nil {
+				return errors.New("не удалось проверить основной процесс Xray; восстановление отложено")
+			}
+			if !running {
 				fmt.Println("Восстанавливаю XKeen после прерванного hard-sync…")
 				if err := xkeen("-start"); err != nil {
 					return err
 				}
-				if err := waitXrayReady(engine, 60*time.Second); err != nil {
+				if err := waitXrayReady(engine, 60*time.Second, serverRunning); err != nil {
 					return err
+				}
+			} else {
+				if _, err := engine.R.List(); err != nil {
+					return errors.New("основной Xray запущен, но API списка узлов недоступен; восстановление отложено")
+				}
+				if _, err := engine.R.Balance(); err != nil {
+					return errors.New("основной Xray запущен, но API балансировщика недоступен; восстановление отложено")
 				}
 			}
 			if err := engine.RecordHardSync("applying", false, ""); err != nil {

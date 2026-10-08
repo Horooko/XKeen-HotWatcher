@@ -35,6 +35,9 @@ func usage() {
   auto          Снять закрепление и выбрать лучший доступный ключ
   emergency     Прочитать один VLESS URI из ввода и аварийно применить его
   status         Показать состояние службы и выбранный ключ
+  activity status Показать текущую задачу, PID и время выполнения
+  activity stop   Остановить фоновые задачи на безопасной границе
+  activity resume Возобновить фоновые задачи
   webui token    Показать постоянный токен входа в Web UI
   update         Проверить и установить доступное обновление программы
 
@@ -113,7 +116,7 @@ func run() error {
 		} else if !os.IsNotExist(err) {
 			return err
 		}
-		_, err = hw.New(c).Status()
+		_, err = hw.StatusWithProductionXray(c, "/proc")
 		return err
 	}
 	if command == "update-validation" {
@@ -124,7 +127,7 @@ func run() error {
 		if err != nil {
 			return err
 		}
-		if _, err = hw.New(c).Status(); err != nil {
+		if _, err = hw.StatusWithProductionXray(c, "/proc"); err != nil {
 			return err
 		}
 		return updater.ValidationHeartbeat(args[1])
@@ -204,20 +207,49 @@ func run() error {
 	if command == "recovery" {
 		return recoveryCommand(c, engine, args[1:])
 	}
-	if command == "doctor" && len(args) == 2 && args[1] == "network" {
-		fmt.Println("Проверяю подключение по этапам; сетевые пробы могут занять несколько минут…")
-		report := engine.DoctorNetworkWithProgress(func(check hw.NetworkCheck) {
-			state := "ОШИБКА"
-			if check.OK {
-				state = "OK"
-			}
-			fmt.Printf("[%s] %s: %s\n", state, check.Name, check.Detail)
-		})
-		printJSON(report)
-		if !report.Healthy {
-			return errors.New("часть сетевых проверок не прошла; действия указаны в отчёте")
+	if command == "activity" {
+		if len(args) != 2 {
+			return errors.New("использование: hotwatcher activity status|stop|resume")
 		}
-		return nil
+		switch args[1] {
+		case "status":
+			activity, err := hw.ActivityStatus(c)
+			if err == nil {
+				printJSON(activity)
+			}
+			return err
+		case "stop":
+			if err := hw.StopBackground(c); err != nil {
+				return err
+			}
+			fmt.Println("Остановка фоновых задач запрошена. Уже начатое применение завершится безопасно; XKeen не останавливается.")
+			return nil
+		case "resume":
+			if err := hw.ResumeBackground(c); err != nil {
+				return err
+			}
+			fmt.Println("Фоновые задачи возобновлены.")
+			return nil
+		default:
+			return errors.New("использование: hotwatcher activity status|stop|resume")
+		}
+	}
+	if command == "doctor" && len(args) == 2 && args[1] == "network" {
+		return hw.WithLockWaitNamed(c, "doctor network", 30*time.Second, func() error {
+			fmt.Println("Проверяю подключение по этапам; сетевые пробы могут занять несколько минут…")
+			report := engine.DoctorNetworkWithProgress(func(check hw.NetworkCheck) {
+				state := "ОШИБКА"
+				if check.OK {
+					state = "OK"
+				}
+				fmt.Printf("[%s] %s: %s\n", state, check.Name, check.Detail)
+			})
+			printJSON(report)
+			if !report.Healthy {
+				return errors.New("часть сетевых проверок не прошла; действия указаны в отчёте")
+			}
+			return nil
+		})
 	}
 	if command == "doctor" && len(args) != 1 {
 		return errors.New("использование: hotwatcher doctor [network]")
@@ -236,7 +268,11 @@ func run() error {
 		var er error
 		switch command {
 		case "status":
-			v, er = engine.Status()
+			if running := xrayProcessRunning("/proc", c.XrayBinary, c.ConfigDir, c.StateDir); running == nil || !*running {
+				v, er = engine.StatusWithoutRuntime()
+			} else {
+				v, er = engine.Status()
+			}
 		case "doctor":
 			v, er = engine.Doctor()
 		case "nodes":
@@ -255,7 +291,11 @@ func run() error {
 			}
 			fmt.Println("Проверяю применённые ключи; проверка может занять несколько минут…")
 			var keys hw.KeysReport
-			keys, er = engine.Keys()
+			er = hw.WithLockWaitNamed(c, "keys check", 30*time.Second, func() error {
+				var checkErr error
+				keys, checkErr = engine.Keys()
+				return checkErr
+			})
 			if er == nil {
 				printKeys(keys)
 			}
@@ -564,6 +604,19 @@ func ageText(d time.Duration) string {
 	return fmt.Sprintf("%d сек", seconds)
 }
 func daemon(c hw.Config, e *hw.Engine) error {
+	// The daemon can probe unattended. Its probes must not mutate the routing
+	// table of the Xray process serving the LAN, regardless of the UI setting.
+	backgroundConfig := c
+	backgroundConfig.ForceIsolatedChecks = true
+	background := hw.New(backgroundConfig)
+	background.ShouldStop = func() bool {
+		paused, err := hw.BackgroundPaused(c)
+		if err != nil || paused {
+			return true
+		}
+		running := xrayProcessRunning("/proc", c.XrayBinary, c.ConfigDir, c.StateDir)
+		return running == nil || !*running
+	}
 	unlockDaemon, err := hw.LockDaemon(c.StateDir)
 	if err != nil {
 		hw.SafeLog(c, "daemon_start_refused", map[string]any{"message": err.Error()})
@@ -581,9 +634,13 @@ func daemon(c hw.Config, e *hw.Engine) error {
 	}
 	hw.SafeLog(c, "daemon_started", map[string]any{"interval_seconds": c.IntervalSeconds})
 	next := hw.NextSubscriptionCheck(c)
-	nextKeyCheck := time.Time{} // Check the saved pin once on service startup.
+	nextKeyCheck := time.Now().Add(time.Duration(c.KeyCheckSeconds) * time.Second)
 	if id := os.Getenv("HOTWATCHER_UPDATE_ID"); id != "" {
-		if _, err := e.Status(); err != nil {
+		status := e.Status
+		if running := xrayProcessRunning("/proc", c.XrayBinary, c.ConfigDir, c.StateDir); running == nil || !*running {
+			status = e.StatusWithoutRuntime
+		}
+		if _, err := status(); err != nil {
 			return err
 		}
 		if err := updater.DaemonReady(id); err != nil {
@@ -602,31 +659,66 @@ func daemon(c hw.Config, e *hw.Engine) error {
 			return nil
 		default:
 		}
-		err := hw.WithLock(c, func() error {
-			if er := e.Reconcile(); er != nil {
-				return er
+		if paused, pauseErr := hw.BackgroundPaused(c); pauseErr != nil || paused {
+			if pauseErr != nil {
+				hw.SafeLog(c, "background_pause_error", map[string]any{"message": pauseErr.Error()})
 			}
-			if time.Now().After(next) {
-				next = time.Now().Add(time.Duration(c.IntervalSeconds) * time.Second)
-				hw.WriteNextSubscriptionCheck(c, next)
-				er := e.Sync(false)
-				hw.WriteLastCheck(c, er == nil)
-				if er != nil {
-					// Subscription download/validation may fail while the saved
-					// selected node is already dead. Check the saved pool anyway.
-					if _, keyErr := e.CheckKey(); keyErr != nil {
-						hw.SafeLog(c, "key_check_failed", map[string]any{"message": keyErr.Error()})
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-time.After(5 * time.Second):
+				continue
+			}
+		}
+		// XKeen uses pidof xray. Do not keep an `xray api` client alive while
+		// the actual server is stopped: it can prevent `xkeen -start`.
+		if running := xrayProcessRunning("/proc", c.XrayBinary, c.ConfigDir, c.StateDir); running == nil || !*running {
+			// Check for a newly started XKeen promptly so its volatile
+			// balancer override is restored before clients rely on it.
+			timer := time.NewTimer(min(time.Duration(c.ReconcileSeconds)*time.Second, 5*time.Second))
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				hw.SafeLog(c, "daemon_stopped", nil)
+				return nil
+			case <-timer.C:
+				continue
+			}
+		}
+		err := hw.WithLockNamed(c, "background reconcile", background.Reconcile)
+		if err == nil {
+			var manual bool
+			manual, err = background.ManualMode()
+			// A manually pinned key is not checked or replaced unattended.
+			if err == nil && !manual && time.Now().After(next) {
+				err = hw.WithLockNamed(c, "background sync", func() error {
+					next = time.Now().Add(time.Duration(c.IntervalSeconds) * time.Second)
+					hw.WriteNextSubscriptionCheck(c, next)
+					er := background.Sync(false)
+					hw.WriteLastCheck(c, er == nil)
+					return er
+				})
+				if err != nil {
+					if paused, _ := hw.BackgroundPaused(c); paused {
+						next = time.Time{}
+					} else {
+						// A failed download can still leave a dead selected key.
+						if checkErr := hw.WithLockNamed(c, "background check-key", func() error {
+							_, er := background.CheckKey()
+							return er
+						}); checkErr != nil {
+							hw.SafeLog(c, "key_check_failed", map[string]any{"message": checkErr.Error()})
+						}
 					}
 				}
-				return er
-			}
-			if time.Now().After(nextKeyCheck) {
+			} else if err == nil && !manual && time.Now().After(nextKeyCheck) {
 				nextKeyCheck = time.Now().Add(time.Duration(c.KeyCheckSeconds) * time.Second)
-				_, keyErr := e.CheckKey()
-				return keyErr
+				err = hw.WithLockNamed(c, "background check-key", func() error {
+					_, er := background.CheckKey()
+					return er
+				})
 			}
-			return nil
-		})
+		}
 		if err != nil {
 			hw.SafeLog(c, "daemon_check_failed", map[string]any{"message": err.Error()})
 		}

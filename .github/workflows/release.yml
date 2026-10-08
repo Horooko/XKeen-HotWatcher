@@ -29,6 +29,9 @@ jobs:
         with:
           go-version: '1.27.1'
           cache: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
       - name: Validate, build, sign and publish
         env:
           RELEASE_TAG: ${{ github.event.inputs.tag || github.event.release.tag_name }}
@@ -63,6 +66,7 @@ jobs:
             echo "::error::Release $RELEASE_TAG already has uploaded assets. Use a new version rather than replacing signed files."
             exit 1
           fi
+          node --test tests/webui.test.cjs
           go test ./...
           go vet ./...
           version="${RELEASE_TAG#v}"
@@ -73,7 +77,7 @@ jobs:
           mkdir -p release-out
           for arch in arm64 amd64; do
             CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath -ldflags="-s -w -X local/xkeen-hot-watcher/internal/hotwatcher.Version=$version -X local/xkeen-hot-watcher/internal/updater.Commit=$commit -X local/xkeen-hot-watcher/internal/updater.BuildTime=$built -X local/xkeen-hot-watcher/internal/updater.Dirty=false" -o "release-out/hotwatcher_${RELEASE_TAG}_linux_${arch}" ./cmd/hotwatcher
-            CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath -ldflags='-s -w' -o "release-out/hotwatcher-updater_linux_${arch}" ./cmd/hotwatcher-updater
+            CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath -ldflags="-s -w -X local/xkeen-hot-watcher/internal/hotwatcher.Version=$version" -o "release-out/hotwatcher-updater_linux_${arch}" ./cmd/hotwatcher-updater
             mkdir -p "release-out/package-${arch}/dist"
             cp "release-out/hotwatcher_${RELEASE_TAG}_linux_${arch}" "release-out/package-${arch}/dist/hotwatcher-linux-${arch}"
             cp "release-out/hotwatcher-updater_linux_${arch}" "release-out/package-${arch}/dist/hotwatcher-updater-linux-${arch}"

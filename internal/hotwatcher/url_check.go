@@ -125,6 +125,9 @@ func (e *Engine) urlTestNode(node Node) (URLTestReport, error) {
 }
 
 func (e *Engine) urlTestNodeProgress(node Node, progress func(URLTestReport)) (URLTestReport, error) {
+	if err := e.stopIfRequested(); err != nil {
+		return URLTestReport{}, err
+	}
 	sites, err := e.URLTestSites()
 	if err != nil {
 		return URLTestReport{}, err
@@ -146,6 +149,9 @@ func (e *Engine) urlTestNodeProgress(node Node, progress func(URLTestReport)) (U
 	}
 	if probeErr != nil {
 		return report, probeErr
+	}
+	if err := e.stopIfRequested(); err != nil {
+		return report, err
 	}
 	if !report.Passed {
 		return report, errors.New("URL Test: один или несколько сайтов не открылись через этот ключ")

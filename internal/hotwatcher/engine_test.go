@@ -10,6 +10,7 @@ import (
 )
 
 type fakeRuntime struct {
+	listCalls, balanceCalls            int
 	tags                               map[string]bool
 	override                           string
 	initial                            string
@@ -28,6 +29,7 @@ type fakeRuntime struct {
 }
 
 func (f *fakeRuntime) List() (map[string]bool, error) {
+	f.listCalls++
 	if f.failList {
 		return nil, errors.New("Xray API unavailable")
 	}
@@ -38,6 +40,7 @@ func (f *fakeRuntime) List() (map[string]bool, error) {
 	return m, nil
 }
 func (f *fakeRuntime) Balance() (Balance, error) {
+	f.balanceCalls++
 	if f.failBalance {
 		return Balance{}, errors.New("RoutingService unavailable")
 	}
@@ -100,6 +103,20 @@ func (f *fakeRuntime) URLTest(n Node, sites []string) (URLTestReport, error) {
 		report.Results = append(report.Results, URLTestResult{Site: site, OK: !f.urlFailures[n.Tag]})
 	}
 	return report, nil
+}
+
+func TestStatusWithoutRuntimeDoesNotSpawnAPIClients(t *testing.T) {
+	e, runtime, _ := setupEngine(t)
+	status, err := e.StatusWithoutRuntime()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.listCalls != 0 || runtime.balanceCalls != 0 {
+		t.Fatalf("offline status contacted Xray API: lso=%d bi=%d", runtime.listCalls, runtime.balanceCalls)
+	}
+	if status["api_reachable"] != false || status["balancer_api_reachable"] != false {
+		t.Fatal("offline API must be reported unavailable")
+	}
 }
 func setupEngine(t *testing.T) (*Engine, *fakeRuntime, *string) {
 	t.Helper()
@@ -340,6 +357,30 @@ func TestLatencySelectionNeedsMaterialGainAfterCooldown(t *testing.T) {
 	}
 }
 
+func TestLatencySelectionKeepsHealthyIncumbentAfterFastestSiteFailure(t *testing.T) {
+	e, r, raw := setupEngine(t)
+	*raw = uri(testUUID, "FI") + "\n" + uri("00000000-0000-4000-8000-000000000002", "DE") + "\n" + uri("00000000-0000-4000-8000-000000000003", "US")
+	if err := e.Sync(true); err != nil {
+		t.Fatal(err)
+	}
+	s, err := e.state()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var peers []string
+	for _, n := range s.Active {
+		if n.Tag != s.Selected {
+			peers = append(peers, n.Tag)
+		}
+	}
+	r.latencies = map[string]time.Duration{s.Selected: 100 * time.Millisecond, peers[0]: 10 * time.Millisecond, peers[1]: 120 * time.Millisecond}
+	r.urlFailures = map[string]bool{peers[0]: true}
+	selected, err := e.fastest(s.Active, s.Selected, e.Now().Add(-time.Hour))
+	if err != nil || selected != s.Selected {
+		t.Fatalf("slower peer displaced reachable incumbent after site failure: %s, %v", selected, err)
+	}
+}
+
 func TestSyncKeepsWorkingKeyUntilCooldownAndGain(t *testing.T) {
 	e, r, raw := setupEngine(t)
 	*raw = uri(testUUID, "FI") + "\n" + uri("00000000-0000-4000-8000-000000000002", "DE")
@@ -544,7 +585,7 @@ func TestCheckKeySwitchesOnlyWhenActiveFails(t *testing.T) {
 	}
 }
 
-func TestCheckKeyDoesNotURLTestAnotherPeerIfChosenOneFails(t *testing.T) {
+func TestCheckKeyTriesNextPeerWhenFirstCannotBeApplied(t *testing.T) {
 	e, r, raw := setupEngine(t)
 	*raw = uri(testUUID, "FI") + "\n" + uri("00000000-0000-4000-8000-000000000002", "DE") + "\n" + uri("00000000-0000-4000-8000-000000000003", "US")
 	if err := e.Sync(true); err != nil {
@@ -561,8 +602,22 @@ func TestCheckKeyDoesNotURLTestAnotherPeerIfChosenOneFails(t *testing.T) {
 	r.latencies = map[string]time.Duration{peers[0]: 10 * time.Millisecond, peers[1]: 30 * time.Millisecond}
 	r.probeFailsOn = map[string]int{peers[0]: r.probeCounts[peers[0]] + 2}
 	selected, err := e.CheckKey()
-	if err == nil || selected != "" || r.override != s.Selected || e.pending() {
-		t.Fatal("another peer was selected after chosen peer failed", selected, err)
+	if err != nil || selected != peers[1] || r.override != peers[1] || e.pending() {
+		t.Fatal("healthy second peer was not selected", selected, err)
+	}
+}
+
+func TestCheckKeyDoesNotFailOverForOneSiteFailure(t *testing.T) {
+	e, r, raw := setupEngine(t)
+	*raw = uri(testUUID, "FI") + "\n" + uri("00000000-0000-4000-8000-000000000002", "DE")
+	if err := e.Sync(true); err != nil {
+		t.Fatal(err)
+	}
+	s, _ := e.state()
+	r.urlFailures = map[string]bool{s.Selected: true}
+	selected, err := e.CheckKey()
+	if err == nil || selected != s.Selected || r.override != s.Selected || e.pending() {
+		t.Fatal("site-specific URL Test failure changed a reachable key", selected, err)
 	}
 }
 

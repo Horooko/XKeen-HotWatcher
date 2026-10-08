@@ -28,15 +28,18 @@ func xkeen(action string) error {
 	return nil
 }
 
-func waitXrayReady(engine *hw.Engine, timeout time.Duration) error {
+func waitXrayReady(engine *hw.Engine, timeout time.Duration, serverRunning func() (bool, error)) error {
 	deadline := time.Now().Add(timeout)
-	lastStage := "API списка узлов"
+	lastStage := "основной процесс Xray"
 	for {
-		lastStage = "API списка узлов"
-		if _, err := engine.R.List(); err == nil {
-			lastStage = "API балансировщика"
-			if _, err = engine.R.Balance(); err == nil {
-				return nil
+		lastStage = "основной процесс Xray"
+		if running, processErr := serverRunning(); processErr == nil && running {
+			lastStage = "API списка узлов"
+			if _, err := engine.R.List(); err == nil {
+				lastStage = "API балансировщика"
+				if _, err = engine.R.Balance(); err == nil {
+					return nil
+				}
 			}
 		}
 		if time.Now().After(deadline) {
@@ -59,11 +62,11 @@ func fetchWithoutVPN(stop, start func() error, fetch func() ([]byte, error)) (bo
 	return fetch()
 }
 
-func waitXrayStopped(engine *hw.Engine, timeout time.Duration) error {
+func waitXrayStopped(timeout time.Duration, serverRunning func() (bool, error)) error {
 	deadline := time.Now().Add(timeout)
 	for {
-		_, err := engine.R.List()
-		if err != nil {
+		running, err := serverRunning()
+		if err == nil && !running {
 			return nil
 		}
 		if time.Now().After(deadline) {
@@ -81,7 +84,7 @@ func hardSync(c hw.Config, engine *hw.Engine) (err error) {
 	} else if progress != nil {
 		return errors.New("предыдущий hard-sync не завершён; проверьте hotwatcher recovery status")
 	}
-	status, err := engine.Status()
+	status, err := hw.StatusWithProductionXray(c, "/proc")
 	if err != nil {
 		return err
 	}
@@ -101,7 +104,7 @@ func hardSync(c hw.Config, engine *hw.Engine) (err error) {
 		return errors.New("файл ключей изменён вне Hot Watcher")
 	}
 	if status["api_reachable"] != true {
-		if running := xrayProcessRunning("/proc", c.XrayBinary, c.StateDir); running != nil && !*running {
+		if running := xrayProcessRunning("/proc", c.XrayBinary, c.ConfigDir, c.StateDir); running != nil && !*running {
 			return errors.New("основной сервер Xray не запущен; hard-sync не начат. xkeen -status может принять служебный процесс xray api за сервер; проверьте процессы Xray и восстановите XKeen")
 		}
 		return fmt.Errorf("API Xray на %s недоступен; hard-sync не начат. Проверьте основной процесс Xray и его API", c.APIAddress)
@@ -125,7 +128,7 @@ func hardSync(c hw.Config, engine *hw.Engine) (err error) {
 		if previous != nil {
 			return errors.New("предыдущий hard-sync не завершён; проверьте hotwatcher recovery status")
 		}
-		lockedStatus, statusErr := engine.Status()
+		lockedStatus, statusErr := hw.StatusWithProductionXray(c, "/proc")
 		if statusErr != nil {
 			return statusErr
 		}
@@ -152,6 +155,9 @@ func hardSync(c hw.Config, engine *hw.Engine) (err error) {
 		}()
 		verified := map[string]time.Duration{}
 		var prepared hw.Parsed
+		serverRunning := func() (bool, error) {
+			return hw.XrayServerRunning("/proc", c.XrayBinary, c.ConfigDir, c.StateDir)
+		}
 		_, fetchErr := fetchWithoutVPN(func() error {
 			if err := setStage("stopping_xkeen", true); err != nil {
 				return err
@@ -159,7 +165,7 @@ func hardSync(c hw.Config, engine *hw.Engine) (err error) {
 			if stopErr := xkeen("-stop"); stopErr != nil {
 				return stopErr
 			}
-			if err := waitXrayStopped(engine, 30*time.Second); err != nil {
+			if err := waitXrayStopped(30*time.Second, serverRunning); err != nil {
 				return err
 			}
 			return setStage("downloading", true)
@@ -169,7 +175,7 @@ func hardSync(c hw.Config, engine *hw.Engine) (err error) {
 			}
 			startErr := xkeen("-start")
 			fmt.Println("Ожидаю API списка узлов и балансировщика после запуска XKeen…")
-			readyErr := waitXrayReady(engine, 60*time.Second)
+			readyErr := waitXrayReady(engine, 60*time.Second, serverRunning)
 			if readyErr == nil {
 				if startErr != nil {
 					fmt.Println("XKeen сообщил об ошибке запуска, но оба API Xray доступны.")

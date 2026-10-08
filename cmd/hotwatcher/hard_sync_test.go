@@ -8,9 +8,15 @@ import (
 	"time"
 )
 
-type readyRuntime struct{ listErr, balanceErr bool }
+type readyRuntime struct {
+	listErr, balanceErr bool
+	listCalls           *int
+}
 
 func (r readyRuntime) List() (map[string]bool, error) {
+	if r.listCalls != nil {
+		(*r.listCalls)++
+	}
 	if r.listErr {
 		return nil, errors.New("unavailable")
 	}
@@ -46,10 +52,28 @@ func TestWaitXrayReadyChecksBalancerAsWellAsList(t *testing.T) {
 		{readyRuntime{listErr: true}, "API списка узлов"},
 	} {
 		e := &hw.Engine{R: test.runtime}
-		err := waitXrayReady(e, 0)
+		err := waitXrayReady(e, 0, func() (bool, error) { return true, nil })
 		if test.want == "" && err != nil || test.want != "" && (err == nil || !strings.Contains(err.Error(), test.want)) {
 			t.Fatalf("runtime=%+v err=%v; want %q", test.runtime, err, test.want)
 		}
+	}
+}
+
+func TestWaitXrayReadyDoesNotCallAPIWithoutServer(t *testing.T) {
+	listCalls := 0
+	e := &hw.Engine{R: readyRuntime{listCalls: &listCalls}}
+	err := waitXrayReady(e, 0, func() (bool, error) { return false, nil })
+	if err == nil || !strings.Contains(err.Error(), "основной процесс Xray") || listCalls != 0 {
+		t.Fatalf("missing server should fail before API checks: %v", err)
+	}
+}
+
+func TestWaitXrayStoppedUsesProcessState(t *testing.T) {
+	if err := waitXrayStopped(0, func() (bool, error) { return false, nil }); err != nil {
+		t.Fatalf("stopped process rejected: %v", err)
+	}
+	if err := waitXrayStopped(0, func() (bool, error) { return false, errors.New("unreadable /proc") }); err == nil {
+		t.Fatal("unknown process state was treated as stopped")
 	}
 }
 

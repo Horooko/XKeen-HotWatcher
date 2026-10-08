@@ -25,7 +25,7 @@ type LockInfo struct {
 }
 
 func lockOperation() string {
-	allowed := map[string]bool{"sync": true, "hard-sync": true, "adopt": true, "check-key": true, "select": true, "recover": true, "abort": true, "recovery": true, "dns": true, "daemon": true, "stop": true, "start": true}
+	allowed := map[string]bool{"sync": true, "hard-sync": true, "adopt": true, "check-key": true, "select": true, "pin": true, "auto": true, "url-test": true, "gc": true, "reconcile": true, "recover": true, "abort": true, "recovery": true, "dns": true, "daemon": true, "stop": true, "start": true}
 	for _, arg := range os.Args[1:] {
 		if allowed[arg] {
 			return arg
@@ -144,7 +144,9 @@ func removeSync(path string) error {
 	defer f.Close()
 	return f.Sync()
 }
-func lock(dir string) (func(), error) {
+func lock(dir string) (func(), error) { return lockNamed(dir, lockOperation()) }
+
+func lockNamed(dir, operation string) (func(), error) {
 	if e := privateDir(dir); e != nil {
 		return nil, e
 	}
@@ -163,7 +165,10 @@ func lock(dir string) (func(), error) {
 		}
 		return nil, fmt.Errorf("Hot Watcher lock failed: %w", e)
 	}
-	info := LockInfo{Busy: true, PID: os.Getpid(), Operation: lockOperation(), Since: time.Now().UTC()}
+	if operation == "" || len(operation) > 64 {
+		operation = "hotwatcher"
+	}
+	info := LockInfo{Busy: true, PID: os.Getpid(), Operation: operation, Since: time.Now().UTC()}
 	if e = f.Truncate(0); e == nil {
 		_, e = f.Seek(0, io.SeekStart)
 	}

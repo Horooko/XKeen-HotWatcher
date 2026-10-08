@@ -25,5 +25,7 @@
   "static_fallback_tag": "vless-reality",
   "ca_file": "",
   "allow_tls_nodes": false,
+  "allow_live_probes": false,
+  "outbound_mark": 0,
   "allow_loopback_http_for_tests": false
 }
