@@ -1,8 +1,10 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -79,5 +81,21 @@ COMMIT`
 	got := parseInterceptionRules(rules, "tcp", "REDIRECT", 61219)
 	if !got.Present || got.IngressPackets != 4 || got.RedirectedPackets != 4 {
 		t.Fatalf("full policy route = %+v", got)
+	}
+}
+
+func TestIPv6InterceptionUsesSameHybridRulesAndSeparateStatus(t *testing.T) {
+	rules := `*mangle
+:xkeen - [0:0]
+[6:480] -A PREROUTING -p udp -j xkeen
+[5:400] -A xkeen -p udp -j TPROXY --on-ip ::1 --on-port 61219 --tproxy-mark 0x111/0xffffffff
+COMMIT`
+	got := parseInterceptionRules(rules, "udp", "TPROXY", 61219)
+	if !got.Present || got.IngressPackets != 6 || got.RedirectedPackets != 5 {
+		t.Fatalf("IPv6 UDP route = %+v", got)
+	}
+	data, err := json.Marshal(lanInterceptionStatus{UDPIPv6: got})
+	if err != nil || !strings.Contains(string(data), `"udp_ipv6"`) {
+		t.Fatalf("IPv6 status missing from JSON: %s, %v", data, err)
 	}
 }

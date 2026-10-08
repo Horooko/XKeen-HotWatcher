@@ -392,7 +392,7 @@
     const previous = previousLAN && previousLAN.checked_at !== lan.checked_at ? previousLAN : null;
     const reasons = { xray_inbound_unknown: "Не найден подходящий вход Xray в 03_inbounds.json", iptables_save_unavailable: "iptables-save недоступен", rules_unavailable: "Не удалось прочитать правила", xkeen_chain_missing: "Цепочка xkeen отсутствует", prerouting_jump_missing: "Нет перехода из PREROUTING", redirect_target_missing: "Нет перенаправления на порт Xray", route_disconnected: "Правило не связано с входом LAN" };
     text("lanChecked", "Правила проверены: " + dateLabel(lan.checked_at) + ". Счётчики суммарные для всей сети.");
-    for (const [name, key] of [["TCP", "tcp"], ["UDP", "udp"]]) {
+    for (const [name, key] of [["TCP", "tcp"], ["UDP", "udp"], ["IPv6TCP", "tcp_ipv6"], ["IPv6UDP", "udp_ipv6"]]) {
       const path = lan[key] || {};
       const before = previous?.[key];
       text("lan" + name + "State", !path.known ? "Проверка недоступна" : path.present ? "Правило найдено" : "Правило отсутствует");

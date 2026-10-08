@@ -21,6 +21,8 @@ type lanInterceptionStatus struct {
 	CheckedAt time.Time           `json:"checked_at"`
 	TCP       lanInterceptionPath `json:"tcp"`
 	UDP       lanInterceptionPath `json:"udp"`
+	TCPIPv6   lanInterceptionPath `json:"tcp_ipv6"`
+	UDPIPv6   lanInterceptionPath `json:"udp_ipv6"`
 }
 
 type lanInterceptionPath struct {
@@ -82,48 +84,61 @@ func transparentPorts(configDir string) (tcp, udp int) {
 func readLANInterception(parent context.Context, configDir string) lanInterceptionStatus {
 	result := lanInterceptionStatus{CheckedAt: time.Now().UTC()}
 	tcpPort, udpPort := transparentPorts(configDir)
-	result.TCP.ExpectedPort = tcpPort
-	result.UDP.ExpectedPort = udpPort
-	if tcpPort == 0 {
-		result.TCP.Missing = "xray_inbound_unknown"
+	for _, path := range []*lanInterceptionPath{&result.TCP, &result.TCPIPv6} {
+		path.ExpectedPort = tcpPort
+		if tcpPort == 0 {
+			path.Missing = "xray_inbound_unknown"
+		}
 	}
-	if udpPort == 0 {
-		result.UDP.Missing = "xray_inbound_unknown"
+	for _, path := range []*lanInterceptionPath{&result.UDP, &result.UDPIPv6} {
+		path.ExpectedPort = udpPort
+		if udpPort == 0 {
+			path.Missing = "xray_inbound_unknown"
+		}
 	}
 	if tcpPort == 0 && udpPort == 0 {
 		return result
 	}
-	binary := ""
-	for _, candidate := range []string{"/opt/sbin/iptables-save", "/opt/bin/iptables-save", "/usr/sbin/iptables-save", "/sbin/iptables-save", "/usr/bin/iptables-save", "/bin/iptables-save"} {
+	readFamilyInterception(parent, "iptables-save", tcpPort, udpPort, &result.TCP, &result.UDP)
+	readFamilyInterception(parent, "ip6tables-save", tcpPort, udpPort, &result.TCPIPv6, &result.UDPIPv6)
+	return result
+}
+
+func findIPTablesSave(name string) string {
+	for _, dir := range []string{"/opt/sbin", "/opt/bin", "/usr/sbin", "/sbin", "/usr/bin", "/bin"} {
+		candidate := filepath.Join(dir, name)
 		if info, err := os.Stat(candidate); err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0111 != 0 {
-			binary = candidate
-			break
+			return candidate
 		}
 	}
+	return ""
+}
+
+func readFamilyInterception(parent context.Context, tool string, tcpPort, udpPort int, tcp, udp *lanInterceptionPath) {
+	binary := findIPTablesSave(tool)
 	if binary == "" {
 		if tcpPort != 0 {
-			result.TCP.Missing = "iptables_save_unavailable"
+			tcp.Missing = "iptables_save_unavailable"
 		}
 		if udpPort != 0 {
-			result.UDP.Missing = "iptables_save_unavailable"
+			udp.Missing = "iptables_save_unavailable"
 		}
-		return result
+		return
 	}
 	if tcpPort != 0 {
 		if rules, err := readIPTablesSave(parent, binary, "nat"); err == nil {
-			result.TCP = parseInterceptionRules(rules, "tcp", "REDIRECT", tcpPort)
+			*tcp = parseInterceptionRules(rules, "tcp", "REDIRECT", tcpPort)
 		} else {
-			result.TCP.Missing = "rules_unavailable"
+			tcp.Missing = "rules_unavailable"
 		}
 	}
 	if udpPort != 0 {
 		if rules, err := readIPTablesSave(parent, binary, "mangle"); err == nil {
-			result.UDP = parseInterceptionRules(rules, "udp", "TPROXY", udpPort)
+			*udp = parseInterceptionRules(rules, "udp", "TPROXY", udpPort)
 		} else {
-			result.UDP.Missing = "rules_unavailable"
+			udp.Missing = "rules_unavailable"
 		}
 	}
-	return result
 }
 
 func readIPTablesSave(parent context.Context, binary, table string) (string, error) {

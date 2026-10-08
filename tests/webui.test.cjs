@@ -210,8 +210,9 @@ test('system shows LAN interception rules and packet deltas without claiming cli
   a.renderSystem({ ...base, lan_interception: { checked_at: '2026-10-08T00:01:00Z', tcp: { known: true, present: true, expected_port: 61219, ingress_packets: 10, redirected_packets: 4 }, udp: { known: true, present: false, expected_port: 61219, missing: 'prerouting_jump_missing' } } });
   assert.match(a.elements.get('lanTCPState').textContent, /Правило найдено/);
   assert.match(a.elements.get('lanUDPDetail').textContent, /PREROUTING/);
-  a.renderSystem({ ...base, lan_interception: { checked_at: '2026-10-08T00:02:00Z', tcp: { known: true, present: true, expected_port: 61219, ingress_packets: 12, redirected_packets: 6 }, udp: { known: true, present: false, expected_port: 61219, missing: 'prerouting_jump_missing' } } });
+  a.renderSystem({ ...base, lan_interception: { checked_at: '2026-10-08T00:02:00Z', tcp: { known: true, present: true, expected_port: 61219, ingress_packets: 12, redirected_packets: 6 }, udp: { known: true, present: false, expected_port: 61219, missing: 'prerouting_jump_missing' }, tcp_ipv6: { known: false, missing: 'iptables_save_unavailable' }, udp_ipv6: { known: false, missing: 'iptables_save_unavailable' } } });
   assert.match(a.elements.get('lanTCPDetail').textContent, /с прошлого снимка \+2/);
+  assert.match(a.elements.get('lanIPv6TCPState').textContent, /Проверка недоступна/);
   assert.doesNotMatch(a.elements.get('lanTCPDetail').textContent, /сайт работает/);
 });
 test('activity stop and resume use authenticated POST requests', async () => {
