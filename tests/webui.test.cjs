@@ -204,6 +204,16 @@ test('unknown Xray log settings are not presented as disabled logging', async ()
   assert.match(a.elements.get('xrayLogText').textContent, /Не удалось прочитать настройки/);
   assert.match(a.elements.get('xrayAccessLogDetail').textContent, /Путь не определён/);
 });
+test('system shows LAN interception rules and packet deltas without claiming client success', async () => {
+  const a = await app();
+  const base = { installed: true, checked_at: '2026-10-08T00:00:00Z' };
+  a.renderSystem({ ...base, lan_interception: { checked_at: '2026-10-08T00:01:00Z', tcp: { known: true, present: true, expected_port: 61219, ingress_packets: 10, redirected_packets: 4 }, udp: { known: true, present: false, expected_port: 61219, missing: 'prerouting_jump_missing' } } });
+  assert.match(a.elements.get('lanTCPState').textContent, /Правило найдено/);
+  assert.match(a.elements.get('lanUDPDetail').textContent, /PREROUTING/);
+  a.renderSystem({ ...base, lan_interception: { checked_at: '2026-10-08T00:02:00Z', tcp: { known: true, present: true, expected_port: 61219, ingress_packets: 12, redirected_packets: 6 }, udp: { known: true, present: false, expected_port: 61219, missing: 'prerouting_jump_missing' } } });
+  assert.match(a.elements.get('lanTCPDetail').textContent, /с прошлого снимка \+2/);
+  assert.doesNotMatch(a.elements.get('lanTCPDetail').textContent, /сайт работает/);
+});
 test('activity stop and resume use authenticated POST requests', async () => {
   const a = await app();
   a.setSession();
@@ -258,6 +268,7 @@ test('URL Test shows live site progress and a completed report', async () => {
   a.renderResults({ ...report, mode: 'main_xray', results: [{ site: 'https://example.com/', ok: false, completed: true, status: 200, reason: 'маршрут обошёл ключ' }] });
   assert.match(a.elements.get('resultList').textContent, /маршрут обошёл ключ/);
   assert.match(a.elements.get('resultSummary').textContent, /основной Xray/);
+  assert.match(a.elements.get('resultSummary').textContent, /маршрут устройств в сети не проверен/);
 });
 
 test('exported URL Test describes an endpoint HTTPS check, not site availability', async () => {
@@ -270,6 +281,7 @@ test('exported URL Test describes an endpoint HTTPS check, not site availability
   assert.equal(a.downloads.length, 1);
   const body = await a.downloads[0].text();
   assert.match(body, /Успешных HTTPS-проверок: 1/);
+  assert.match(body, /Маршрут устройств в сети, их DNS и перехват трафика XKeen не проверены/);
   assert.match(body, /HTTPS-проверка не прошла \| https:\/\/chatgpt.com\//);
   assert.doesNotMatch(body, /Открывается|Не открывается/);
 });

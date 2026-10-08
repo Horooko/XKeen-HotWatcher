@@ -28,7 +28,10 @@ type dnsCandidate struct {
 // plaintext or Yandex resolver enters automatic selection.
 var dnsCandidates = []dnsCandidate{
 	{Name: "Cloudflare", URL: "https://1.1.1.1/dns-query", Hostname: "1.1.1.1", BootstrapIP: "1.1.1.1"},
-	{Name: "Google", URL: "https://dns.google/dns-query", Hostname: "dns.google", BootstrapIP: "8.8.8.8"},
+	// Local-mode DoH resolves a hostname through the OS, not dns.hosts. On a
+	// transparent-proxy router this can feed back into Xray after takeover.
+	// Google's IP endpoint serves RFC 8484 with a certificate valid for the IP.
+	{Name: "Google", URL: "https://8.8.8.8/dns-query", Hostname: "8.8.8.8", BootstrapIP: "8.8.8.8"},
 }
 
 type DNSProbeResult struct {

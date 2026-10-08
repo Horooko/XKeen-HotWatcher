@@ -413,6 +413,8 @@ func (w *webUI) handler() http.Handler {
 			return
 		}
 		_, _, system := w.health.snapshot()
+		lan := readLANInterception(r.Context(), w.config.ConfigDir)
+		system.LAN = &lan
 		jsonResponse(out, 200, system)
 	})
 	mux.HandleFunc("GET /api/update", func(out http.ResponseWriter, r *http.Request) {

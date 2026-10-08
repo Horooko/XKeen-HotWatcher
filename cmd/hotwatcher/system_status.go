@@ -18,20 +18,21 @@ import (
 )
 
 type xkeenStatus struct {
-	Installed           bool      `json:"installed"`
-	CommandOK           bool      `json:"command_ok"`
-	Status              []string  `json:"status"`
-	DetachedLog         []string  `json:"detached_log"`
-	XrayErrorLog        []string  `json:"xray_error_log"`
-	XrayAccessLog       []string  `json:"xray_access_log"`
-	XrayLogLevel        string    `json:"xray_log_level,omitempty"`
-	XrayErrorPath       string    `json:"xray_error_path,omitempty"`
-	XrayAccessPath      string    `json:"xray_access_path,omitempty"`
-	XrayLogConfigKnown  bool      `json:"xray_log_config_known"`
-	XrayErrorPathKnown  bool      `json:"xray_error_path_known"`
-	XrayAccessPathKnown bool      `json:"xray_access_path_known"`
-	CheckedAt           time.Time `json:"checked_at"`
-	XrayRunning         *bool     `json:"xray_running"`
+	Installed           bool                   `json:"installed"`
+	CommandOK           bool                   `json:"command_ok"`
+	Status              []string               `json:"status"`
+	DetachedLog         []string               `json:"detached_log"`
+	XrayErrorLog        []string               `json:"xray_error_log"`
+	XrayAccessLog       []string               `json:"xray_access_log"`
+	XrayLogLevel        string                 `json:"xray_log_level,omitempty"`
+	XrayErrorPath       string                 `json:"xray_error_path,omitempty"`
+	XrayAccessPath      string                 `json:"xray_access_path,omitempty"`
+	XrayLogConfigKnown  bool                   `json:"xray_log_config_known"`
+	XrayErrorPathKnown  bool                   `json:"xray_error_path_known"`
+	XrayAccessPathKnown bool                   `json:"xray_access_path_known"`
+	CheckedAt           time.Time              `json:"checked_at"`
+	XrayRunning         *bool                  `json:"xray_running"`
+	LAN                 *lanInterceptionStatus `json:"lan_interception,omitempty"`
 }
 
 type startupCommandResult struct {

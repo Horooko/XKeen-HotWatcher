@@ -13,6 +13,7 @@
   let currentActivity = null;
   let webJob = null;
   let dnsRefreshing = false;
+  let previousLAN = null;
   const pageTitles = { overview: "Обзор подключения", keys: "Управление ключами", "url-test": "Проверка сайтов", dns: "DNS Xray", system: "XKeen и Xray", updates: "Обновления" };
 
   async function api(path, options = {}) {
@@ -275,7 +276,7 @@
     const completed = (report.progress_known || running) ? report.results.filter((item) => item.completed).length : report.results.length;
     const opened = report.results.filter((item) => item.ok).length;
     const route = report.mode === "main_xray" ? " · основной Xray" : report.mode === "isolated" ? " · отдельный Xray" : "";
-    text("resultSummary", "Проверено " + completed + " из " + report.results.length + " · HTTPS-ответ " + opened + " · ошибка проверки " + (completed - opened) + route);
+    text("resultSummary", "Проверено " + completed + " из " + report.results.length + " · HTTPS-ответ " + opened + " · ошибка проверки " + (completed - opened) + route + " · маршрут устройств в сети не проверен");
     badge($("resultBadge"), running ? "Идёт проверка" : completed < report.results.length ? "Прервано" : report.passed ? "Все проверки прошли" : "Есть ошибки", running || completed < report.results.length ? "neutral" : report.passed ? "good" : "bad");
     if (!running) lastReport = report;
     $("downloadReportButton").disabled = running || !lastReport;
@@ -293,7 +294,7 @@
     if (!lastReport?.results?.length) return;
     const opened = lastReport.results.filter((item) => item.ok).length;
     const completed = lastReport.progress_known ? lastReport.results.filter((item) => item.completed).length : lastReport.results.length;
-    const lines = ["Hot Watcher — отчёт URL Test", "Время: " + new Date(lastReport.time).toLocaleString("ru-RU"), "Ключ: " + (lastReport.tag || "—"), "Режим: " + (lastReport.mode === "main_xray" ? "основной Xray" : lastReport.mode === "isolated" ? "отдельный Xray" : "не указан"), "Проверено: " + completed + " из " + lastReport.results.length, "Успешных HTTPS-проверок: " + opened, ""];
+    const lines = ["Hot Watcher — отчёт URL Test", "Время: " + new Date(lastReport.time).toLocaleString("ru-RU"), "Ключ: " + (lastReport.tag || "—"), "Режим: " + (lastReport.mode === "main_xray" ? "основной Xray" : lastReport.mode === "isolated" ? "отдельный Xray" : "не указан"), "Проверено: " + completed + " из " + lastReport.results.length, "Успешных HTTPS-проверок: " + opened, "Маршрут устройств в сети, их DNS и перехват трафика XKeen не проверены.", ""];
     for (const item of lastReport.results) {
       const outcome = lastReport.progress_known && !item.completed ? "Не проверено" : item.ok ? "HTTPS-проверка успешна" : "HTTPS-проверка не прошла";
       lines.push(outcome + " | " + item.site + " | " + (item.status ? "HTTP " + item.status : item.reason || "") + (item.latency_ms != null ? " | " + Math.round(item.latency_ms) + " мс" : ""));
@@ -386,6 +387,24 @@
     } catch (error) { showBanner("Не удалось обновить панель", error.message, "failed"); }
     finally { refreshing = false; }
   }
+  function renderLAN(lan) {
+    if (!lan) return;
+    const previous = previousLAN && previousLAN.checked_at !== lan.checked_at ? previousLAN : null;
+    const reasons = { xray_inbound_unknown: "Не найден подходящий вход Xray в 03_inbounds.json", iptables_save_unavailable: "iptables-save недоступен", rules_unavailable: "Не удалось прочитать правила", xkeen_chain_missing: "Цепочка xkeen отсутствует", prerouting_jump_missing: "Нет перехода из PREROUTING", redirect_target_missing: "Нет перенаправления на порт Xray", route_disconnected: "Правило не связано с входом LAN" };
+    text("lanChecked", "Правила проверены: " + dateLabel(lan.checked_at) + ". Счётчики суммарные для всей сети.");
+    for (const [name, key] of [["TCP", "tcp"], ["UDP", "udp"]]) {
+      const path = lan[key] || {};
+      const before = previous?.[key];
+      text("lan" + name + "State", !path.known ? "Проверка недоступна" : path.present ? "Правило найдено" : "Правило отсутствует");
+      let detail = path.missing ? reasons[path.missing] || "Правило не подтверждено" : "Порт Xray: " + (path.expected_port || "?");
+      if (path.known) {
+        detail += ". Пакеты: вход " + (path.ingress_packets ?? 0) + ", в Xray " + (path.redirected_packets ?? 0);
+        if (before && before.known && Number(path.redirected_packets) >= Number(before.redirected_packets)) detail += "; с прошлого снимка +" + (Number(path.redirected_packets) - Number(before.redirected_packets));
+      }
+      text("lan" + name + "Detail", detail);
+    }
+    if (!previousLAN || previousLAN.checked_at !== lan.checked_at) previousLAN = lan;
+  }
   function renderSystem(state) {
     const checked = !!state.checked_at && !state.checked_at.startsWith("0001");
     const label = !checked ? "Проверяю" : !state.installed ? "Не найден" : state.command_ok ? "Статус получен" : "Установлен, ошибка команды статуса";
@@ -402,6 +421,7 @@
     text("xrayLogText", (state.xray_error_log || []).join("\n") || (logSettingsUnknown ? "Не удалось прочитать настройки журнала Xray." : errorPathUnknown ? "Путь журнала ошибок в конфигурации Xray не распознан." : state.xray_log_level === "none" ? "Журнал ошибок отключён в конфигурации Xray: loglevel = none." : !state.xray_error_path ? "Запись в файл отключена в конфигурации Xray." : "Журнал ошибок пуст или не создан. Это не подтверждает исправность Xray."));
     text("xrayAccessLogDetail", accessPathUnknown ? "Путь не определён" : state.xray_access_path || "Файл отключён");
     text("xrayAccessLogText", (state.xray_access_log || []).join("\n") || (logSettingsUnknown ? "Не удалось прочитать настройки журнала Xray." : accessPathUnknown ? "Путь журнала доступа в конфигурации Xray не распознан." : !state.xray_access_path ? "Журнал доступа отключён в конфигурации Xray." : "Журнал доступа пуст или не создан."));
+    renderLAN(state.lan_interception);
   }
   async function refreshSystem() {
     if (systemRefreshing) return;

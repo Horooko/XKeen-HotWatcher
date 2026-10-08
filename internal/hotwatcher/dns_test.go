@@ -3,6 +3,8 @@ package hotwatcher
 import (
 	"encoding/binary"
 	"encoding/json"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -52,7 +54,7 @@ func TestDNSPreparePreservesSettingsAndRejectsComplexRules(t *testing.T) {
 	if err != nil || string(prepared) != string(repeated) {
 		t.Fatalf("DNS preparation changed its source: %v", err)
 	}
-	if len(servers) != 2 || servers[0] != "https+local://1.1.1.1/dns-query" || servers[1] != "https+local://dns.google/dns-query" || strings.Contains(string(prepared), "yandex") || strings.Contains(string(prepared), "old.example") {
+	if len(servers) != 2 || servers[0] != "https+local://1.1.1.1/dns-query" || servers[1] != "https+local://8.8.8.8/dns-query" || strings.Contains(string(prepared), "yandex") || strings.Contains(string(prepared), "old.example") {
 		t.Fatalf("unexpected DNS servers: %s", prepared)
 	}
 	var root map[string]json.RawMessage
@@ -258,10 +260,19 @@ func TestDNSProbeConfigUsesBuiltinDNSOnLoopback(t *testing.T) {
 }
 
 func TestDNSLocalDoHDoesNotClaimSelectedVLESSRoute(t *testing.T) {
-	if !dnsBypassesRouting(map[string]json.RawMessage{"servers": json.RawMessage(`["https+local://1.1.1.1/dns-query","https+local://dns.google/dns-query"]`)}) {
+	if !dnsBypassesRouting(map[string]json.RawMessage{"servers": json.RawMessage(`["https+local://1.1.1.1/dns-query","https+local://8.8.8.8/dns-query"]`)}) {
 		t.Fatal("local DoH was treated as a routed VLESS DNS query")
 	}
 	if dnsBypassesRouting(map[string]json.RawMessage{"servers": json.RawMessage(`["8.8.8.8"]`)}) {
 		t.Fatal("routed UDP DNS was treated as local")
+	}
+}
+
+func TestDNSAutoLocalDoHDoesNotNeedSystemDNSBootstrap(t *testing.T) {
+	for _, candidate := range dnsCandidates {
+		endpoint, err := url.Parse(candidate.URL)
+		if err != nil || net.ParseIP(endpoint.Hostname()) == nil || endpoint.Hostname() != candidate.BootstrapIP {
+			t.Fatalf("local DoH %s requires a system DNS bootstrap", candidate.Name)
+		}
 	}
 }
