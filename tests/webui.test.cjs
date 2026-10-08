@@ -87,7 +87,8 @@ test('auto mode preserves an emergency tagged selection and shows why key choice
   assert.equal(a.elements.get('selectedOrigin').hidden, false);
   assert.match(a.elements.get('emergencyCurrent').textContent, /сейчас выбран/);
   assert.match(a.elements.get('keysBody').textContent, /Аварийная пометка/);
-  assert.match(a.elements.get('keysWarning').textContent, /незавершённое восстановление/);
+  assert.match(a.elements.get('keysWarning').textContent, /журнал hard-sync/);
+  assert.match(a.elements.get('keysWarning').textContent, /не блокирует смену ключа/);
   assert.match(a.elements.get('keysWarning').textContent, /Последняя синхронизация завершилась ошибкой/);
   assert.match(a.elements.get('keysWarning').textContent, /У всех 19 ключей нет результатов проверки/);
   assert.equal(a.elements.get('keysWarning').hidden, false);

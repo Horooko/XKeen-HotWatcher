@@ -92,8 +92,10 @@ func (e *Engine) RecoveryStatus() (RecoverySnapshot, error) {
 		return result, err
 	}
 	switch {
+	case result.Lock.Busy && result.HardSync != nil:
+		result.SuggestedCommand = "сохранён журнал hard-sync; сейчас другая операция держит блокировку. Маркер сам по себе не блокирует выбор ключа; после завершения операции проверьте recovery status"
 	case result.Lock.Busy:
-		result.SuggestedCommand = "операция ещё выполняется; повторите recovery status после её завершения"
+		result.SuggestedCommand = "другая операция держит блокировку; проверьте activity status и повторите recovery status после её завершения"
 	case result.HardSync != nil && result.HardSync.XKeenMayBeStopped:
 		result.SuggestedCommand = "hotwatcher recovery resume (проверить XKeen и продолжить безопасное восстановление)"
 	case result.PendingTransaction:

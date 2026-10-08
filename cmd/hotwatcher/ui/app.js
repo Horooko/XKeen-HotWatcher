@@ -361,7 +361,8 @@
     text("emergencyCurrent", emergency ? "Сохранён: " + (emergency.Name || emergency.Tag) + (emergency.Selected ? " · сейчас выбран" : " · сейчас не выбран") : "Аварийной пометки нет");
     $("forgetEmergencyButton").disabled = !emergency;
     const keyWarnings = [];
-    if (interrupted) keyWarnings.push("Есть незавершённое восстановление Hot Watcher" + (recovery.hard_sync?.stage ? " (этап: " + recovery.hard_sync.stage + ")" : "") + ". Смена ключа и автовыбор могут быть заблокированы. " + (recovery.suggested_command ? "Рекомендация состояния: " + recovery.suggested_command + ". " : "") + "Восстановление не запускается автоматически.");
+    if (recovery.pending_transaction) keyWarnings.push("Есть незавершённое применение ключей. До завершения или отмены транзакции смена ключа и автовыбор заблокированы.");
+    if (recovery.hard_sync) keyWarnings.push("Сохранился журнал hard-sync" + (recovery.hard_sync.stage ? " (этап: " + recovery.hard_sync.stage + ")" : "") + ". Сам этот журнал не блокирует смену ключа и не подтверждает работу прокси. " + (recovery.suggested_command ? "Состояние: " + recovery.suggested_command + ". " : ""));
     if (keys.LastCheckSuccess === false) keyWarnings.push("Последняя синхронизация завершилась ошибкой; сохранённый список ключей не подтверждает успешные проверки.");
     if (list.length && !list.some((key) => key.Checked || key.Verified)) keyWarnings.push("У всех " + list.length + " ключей нет результатов проверки. «Нет данных» не означает, что ключи не работают.");
     $("keysWarning").hidden = keyWarnings.length === 0;
