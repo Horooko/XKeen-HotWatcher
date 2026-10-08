@@ -14,7 +14,7 @@ import (
 	"strings"
 )
 
-var Version = "0.3.5"
+var Version = "0.3.7"
 
 const TagPrefix = "main--VL--hw-"
 

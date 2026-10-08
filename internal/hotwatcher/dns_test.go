@@ -46,11 +46,11 @@ func TestDNSPreparePreservesSettingsAndRejectsComplexRules(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	prepared, servers, err := prepareDNS(src, dnsCandidates)
+	prepared, servers, err := prepareDNS(src, dnsCandidates[:2])
 	if err != nil {
 		t.Fatal(err)
 	}
-	repeated, _, err := prepareDNS(src, dnsCandidates)
+	repeated, _, err := prepareDNS(src, dnsCandidates[:2])
 	if err != nil || string(prepared) != string(repeated) {
 		t.Fatalf("DNS preparation changed its source: %v", err)
 	}
@@ -77,12 +77,12 @@ func TestDNSPreparePreservesSettingsAndRejectsComplexRules(t *testing.T) {
 		t.Fatal("unrelated top-level setting lost")
 	}
 	src.dns["servers"] = json.RawMessage(`[{"address":"8.8.8.8","domains":["domain:example.org"]}]`)
-	if _, _, err := prepareDNS(src, dnsCandidates); err == nil {
+	if _, _, err := prepareDNS(src, dnsCandidates[:2]); err == nil {
 		t.Fatal("per-domain DNS rules were replaced")
 	}
 	for _, old := range []string{`["localhost"]`, `["fakedns"]`, `["192.168.1.1"]`} {
 		src.dns["servers"] = json.RawMessage(old)
-		if _, _, err := prepareDNS(src, dnsCandidates); err == nil {
+		if _, _, err := prepareDNS(src, dnsCandidates[:2]); err == nil {
 			t.Fatalf("special resolver %s was replaced", old)
 		}
 	}
@@ -94,7 +94,7 @@ func TestDNSPrepareUsesExplicitXrayDefaultOnEmptyFragment(t *testing.T) {
 	if err != nil || !src.created {
 		t.Fatalf("expected new DNS fragment: %+v, %v", src, err)
 	}
-	prepared, _, err := prepareDNS(src, dnsCandidates)
+	prepared, _, err := prepareDNS(src, dnsCandidates[:2])
 	if err != nil {
 		t.Fatal(err)
 	}

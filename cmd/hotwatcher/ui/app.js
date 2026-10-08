@@ -436,7 +436,7 @@
   function renderLAN(lan) {
     if (!lan) return;
     const previous = previousLAN && previousLAN.checked_at !== lan.checked_at ? previousLAN : null;
-    const reasons = { xray_inbound_unknown: "Не найден подходящий вход Xray в 03_inbounds.json", iptables_save_unavailable: "iptables-save недоступен", rules_unavailable: "Не удалось прочитать правила", xkeen_chain_missing: "Цепочка xkeen отсутствует", prerouting_jump_missing: "Нет перехода из PREROUTING", redirect_target_missing: "Нет перенаправления на порт Xray", route_disconnected: "Правило не связано с входом LAN" };
+    const reasons = { xray_inbound_unknown: "Не найден подходящий вход Xray в 03_inbounds.json", iptables_save_unavailable: "iptables-save недоступен", rules_unavailable: "Не удалось прочитать правила", xkeen_chain_missing: "Цепочка xkeen не найдена в проверенном наборе правил", prerouting_jump_missing: "Нет перехода из PREROUTING", redirect_target_missing: "Нет перенаправления на порт Xray", route_disconnected: "Правило не связано с входом LAN" };
     text("lanChecked", "Правила проверены: " + dateLabel(lan.checked_at) + ". Счётчики суммарные для всей сети.");
     for (const [name, key] of [["TCP", "tcp"], ["UDP", "udp"], ["IPv6TCP", "tcp_ipv6"], ["IPv6UDP", "udp_ipv6"]]) {
       const path = lan[key] || {};
@@ -479,13 +479,47 @@
     finally { systemRefreshing = false; }
   }
   function renderDNS(state) {
-    text("dnsConfigFile", state.config_file || "DNS-фрагмент не найден");
+    text("dnsConfigFile", state.generated_config_file || state.config_file || "DNS-фрагмент не найден");
     badge($("dnsBadge"), state.managed ? "DNS auto подготовлен" : "Ручная конфигурация", state.managed ? "good" : "neutral");
     text("dnsServers", "Серверы: " + (state.servers?.length ? state.servers.join(", ") : "не указаны"));
+    text("dnsAppliedProviders", "Выбраны проверкой: " + (state.applied_provider_ids?.length ? state.applied_provider_ids.join(", ") : "—"));
     text("dnsParallel", "Параллельные запросы: " + (state.parallel_queries ? "включены" : "выключены"));
     text("dnsNote", state.note || (state.runtime_activation_unverified ? "Неизвестно, загрузил ли работающий Xray изменения. Требуется ручной перезапуск." : "Показано состояние файла Xray."));
-    $("dnsOnButton").disabled = !!state.managed;
+    const list = $("dnsProviderList");
+    list.replaceChildren();
+    for (const provider of state.providers || []) {
+      const label = document.createElement("label");
+      label.className = "dns-provider";
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.value = provider.id;
+      checkbox.checked = provider.selected === true || (provider.selected == null && state.selected_provider_ids?.includes(provider.id));
+      checkbox.disabled = provider.eligible === false;
+      const detail = document.createElement("span");
+      detail.className = "dns-provider-detail";
+      const name = document.createElement("strong");
+      name.textContent = provider.name;
+      const endpoint = document.createElement("small");
+      endpoint.textContent = provider.reason ? `${provider.url} · ${provider.reason}` : provider.url;
+      detail.append(name, endpoint);
+      label.append(checkbox, detail);
+      list.append(label);
+    }
+    $("dnsAutoSelect").checked = state.auto_selection_enabled !== false;
+    $("dnsOnButton").disabled = false;
+    text("dnsOnButton", state.managed ? "Перепроверить и обновить DNS auto" : "Проверить и включить DNS auto");
     $("dnsOffButton").disabled = !state.managed;
+  }
+  function selectedDNSProviders() {
+    return Array.from($("dnsProviderList").querySelectorAll("input"))
+      .filter(input => input.checked && !input.disabled)
+      .map(input => input.value);
+  }
+  function startDNSAction(action) {
+    const providers = selectedDNSProviders();
+    if (!providers.length) { showBanner("Провайдеры DNS", "Выберите хотя бы один DNS-сервер.", "failed"); return; }
+    if (action === "dns-on" && providers.length < 2) { showBanner("Провайдеры DNS", "Для DNS auto выберите хотя бы два сервера. Оба должны ответить при проверке.", "failed"); return; }
+    startAction(action, "", { providers, auto_select: !!$("dnsAutoSelect").checked });
   }
   async function refreshDNS() {
     if (dnsRefreshing) return;
@@ -502,6 +536,7 @@
       const probes = Array.isArray(result) ? result : result.probes || [];
       lines = probes.map(p => `${p.name}: ${p.success ? "доступен" : "ошибка"}${p.median_ms != null ? ` · ${Math.round(p.median_ms)} мс` : ""} · ${p.responses}/3 ответов${p.note ? ` · ${p.note}` : ""}`);
       if (job.action === "dns-on" && result.config_file) lines.push("Записан файл: " + result.config_file);
+      if (job.action === "dns-on" && result.selected_providers?.length) lines.push("Выбраны: " + result.selected_providers.join(", "));
     } else if (job.action === "dns-verify") {
       lines = ["Файл: " + (result.config_file || "—"), "Прямой маршрут: " + (result.direct?.success ? "DNS ответил" : result.direct?.reason || "нет ответа"), "Выбранный VLESS: " + (result.selected_vless?.success ? "DNS ответил" : result.selected_vless?.reason || "не проверен"), result.scope || ""];
     } else if (job.action === "doctor-network") {
@@ -548,10 +583,10 @@
       $("checkUpdateButton").disabled = !state.enabled || state.state_invalid;
     } catch (error) { showBanner("Обновления", error.message, "failed"); }
   }
-  async function startAction(action, tag = "") {
+  async function startAction(action, tag = "", extra = {}) {
     const names = { sync: "Синхронизация", "check-key": "Проверка ключа", "url-test": "URL Test", select: "Выбор ключа", pin: "Закрепление ключа", auto: "Автовыбор", "forget-emergency": "Аварийный ключ", "update-enable": "Включение обновлений", "update-check": "Проверка обновлений", "update-install": "Установка обновления", "update-auto": "Автоустановка обновлений", "update-disable": "Отключение обновлений", "update-pause-on": "Пауза установки", "update-pause-off": "Возобновление установки", "update-download": "Загрузка пакета", "update-retry": "Повторная попытка", "dns-test": "Проверка DoH", "dns-verify": "Проверка DNS-маршрутов", "dns-on": "Включение DNS auto", "dns-off": "Откат DNS auto", doctor: "Проверка готовности", "startup-check": "Проверка условий запуска XKeen", "doctor-network": "Диагностика сети", plan: "План подписки", "keys-check": "Проверка ключей", adopt: "Первое подключение", reconcile: "Согласование Xray", gc: "Очистка ключей", recover: "Завершение операции", abort: "Откат операции", "hold-on": "Пауза синхронизации", "hold-off": "Возобновление синхронизации", "url-migrate": "Перенос адреса подписки" };
     try {
-      const job = await api("/api/action", { method: "POST", body: JSON.stringify({ action, tag }) });
+      const job = await api("/api/action", { method: "POST", body: JSON.stringify({ action, tag, ...extra }) });
       activeJob = job.id;
       webJob = { action, state: "running", message: "Ожидает завершения" };
       if (currentActivity) renderActivity(currentActivity);
@@ -678,7 +713,9 @@
   $("stopActivityButton").addEventListener("click", () => controlActivity("/api/activity/stop", "Пауза фоновых задач"));
   $("resumeActivityButton").addEventListener("click", () => controlActivity("/api/activity/resume", "Возобновление фоновых задач"));
 	$("refreshDNSButton").addEventListener("click", refreshDNS);
-for (const [id, action] of Object.entries({ dnsOnButton: "dns-on", dnsOffButton: "dns-off", dnsTestButton: "dns-test", dnsVerifyButton: "dns-verify", doctorButton: "doctor", startupCheckButton: "startup-check", doctorNetworkButton: "doctor-network", planButton: "plan", keysCheckButton: "keys-check", adoptButton: "adopt", reconcileButton: "reconcile", gcButton: "gc", recoverButton: "recover", abortButton: "abort", holdOnButton: "hold-on", holdOffButton: "hold-off", migrateSubscriptionButton: "url-migrate", autoUpdateButton: "update-auto", pauseUpdateButton: "update-disable", pauseInstallButton: "update-pause-on", resumeInstallButton: "update-pause-off", downloadUpdateButton: "update-download", retryUpdateButton: "update-retry" })) {
+  $("dnsOnButton").addEventListener("click", () => startDNSAction("dns-on"));
+  $("dnsTestButton").addEventListener("click", () => startDNSAction("dns-test"));
+for (const [id, action] of Object.entries({ dnsOffButton: "dns-off", dnsVerifyButton: "dns-verify", doctorButton: "doctor", startupCheckButton: "startup-check", doctorNetworkButton: "doctor-network", planButton: "plan", keysCheckButton: "keys-check", adoptButton: "adopt", reconcileButton: "reconcile", gcButton: "gc", recoverButton: "recover", abortButton: "abort", holdOnButton: "hold-on", holdOffButton: "hold-off", migrateSubscriptionButton: "url-migrate", autoUpdateButton: "update-auto", pauseUpdateButton: "update-disable", pauseInstallButton: "update-pause-on", resumeInstallButton: "update-pause-off", downloadUpdateButton: "update-download", retryUpdateButton: "update-retry" })) {
 	  $(id).addEventListener("click", () => startAction(action));
 	}
 	$("pinUpdateButton").addEventListener("click", () => { const version = $("pinnedVersion").value.trim(); if (version) pinUpdate(version); else showBanner("Версия обновления", "Введите номер версии.", "failed"); });

@@ -25,7 +25,7 @@ func TestStartupCheckDoesNotReportSuccessAfterFailedConfigTest(t *testing.T) {
 	result := startupCheckResult{
 		ConfigTest:  startupCommandResult{OK: false, Lines: []string{"Configuration failed"}},
 		PBRStatus:   startupCommandResult{OK: true},
-		ProxyStatus: startupCommandResult{OK: true},
+		ProxyStatus: startupCommandResult{OK: false, Lines: []string{"не определён"}},
 	}
 	if err := startupCheckError(result); err == nil || !strings.Contains(err.Error(), "-xtest") {
 		t.Fatalf("failed config test was reported as success: %v", err)
@@ -33,6 +33,23 @@ func TestStartupCheckDoesNotReportSuccessAfterFailedConfigTest(t *testing.T) {
 	result.ConfigTest.OK = true
 	if err := startupCheckError(result); err != nil {
 		t.Fatalf("valid startup checks rejected: %v", err)
+	}
+}
+
+func TestXKeenEntwareProxyModeIsReadFromInitScript(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "S05xkeen")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nproxy_router=\"off\"\nproxy_router='on'\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	result := readXKeenEntwareProxyModeAt(path)
+	if !result.OK || !strings.Contains(strings.Join(result.Lines, " "), "proxy_router=on") {
+		t.Fatalf("unexpected Entware proxy mode: %+v", result)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if readXKeenEntwareProxyModeAt(path).OK {
+		t.Fatal("missing init script reported as known proxy state")
 	}
 }
 

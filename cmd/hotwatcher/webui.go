@@ -613,8 +613,10 @@ func (w *webUI) handler() http.Handler {
 			return
 		}
 		var input struct {
-			Action string `json:"action"`
-			Tag    string `json:"tag"`
+			Action     string   `json:"action"`
+			Tag        string   `json:"tag"`
+			Providers  []string `json:"providers"`
+			AutoSelect *bool    `json:"auto_select"`
 		}
 		if err := decodeRequest(r, &input); err != nil {
 			apiError(out, 400, err.Error())
@@ -637,7 +639,11 @@ func (w *webUI) handler() http.Handler {
 		w.job = webJob{ID: w.job.ID + 1, Action: input.Action, State: "running", Message: "Выполняется…", StartedAt: time.Now().UTC()}
 		job := w.job
 		w.mu.Unlock()
-		go w.runAction(job.ID, input.Action, input.Tag)
+		autoSelect := true
+		if input.AutoSelect != nil {
+			autoSelect = *input.AutoSelect
+		}
+		go w.runAction(job.ID, input.Action, input.Tag, input.Providers, autoSelect)
 		jsonResponse(out, 202, job)
 	})
 	return http.HandlerFunc(func(out http.ResponseWriter, r *http.Request) {
@@ -668,7 +674,7 @@ func webActionAllowed(action string) bool {
 	return false
 }
 
-func (w *webUI) runAction(id uint64, action, tag string) {
+func (w *webUI) runAction(id uint64, action, tag string, providers []string, autoSelect bool) {
 	defer w.health.refresh()
 	var report *hw.URLTestReport
 	var result any
@@ -696,7 +702,12 @@ func (w *webUI) runAction(id uint64, action, tag string) {
 			err = cmd.Wait()
 		}
 	} else if action == "dns-test" {
-		result, err = w.engine.DNSTest()
+		if providers != nil {
+			err = w.engine.SaveDNSProviderSelection(providers, autoSelect)
+		}
+		if err == nil {
+			result, err = w.engine.DNSTest()
+		}
 	} else if action == "dns-verify" {
 		verification, verifyErr := w.engine.DNSVerify()
 		result, err = verification, verifyErr
@@ -736,6 +747,11 @@ func (w *webUI) runAction(id uint64, action, tag string) {
 		err = hw.WithLockWaitNamed(w.config, "web "+action, 30*time.Second, func() error {
 			switch action {
 			case "dns-on":
+				if providers != nil {
+					if err := w.engine.SaveDNSProviderSelection(providers, autoSelect); err != nil {
+						return err
+					}
+				}
 				if _, err := os.Lstat(filepath.Join(w.config.StateDir, "pending.json")); err == nil {
 					return errors.New("сначала завершите операцию с ключами: recover или abort")
 				} else if !os.IsNotExist(err) {

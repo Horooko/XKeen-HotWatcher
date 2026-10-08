@@ -21,7 +21,7 @@ func TestGeneratedDNSWithInstalledXray(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	prepared, _, err := prepareDNS(src, dnsCandidates)
+	prepared, _, err := prepareDNS(src, dnsCandidates[:2])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,8 +64,8 @@ func TestDNSAutoOnOffWithInstalledXray(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DNS auto refused reachable trusted providers: %v, probes: %+v", err, change.Probes)
 	}
-	if len(change.Servers) != 2 {
-		t.Fatalf("DNS auto did not select both trusted providers: %+v", change)
+	if len(change.Servers) < 2 || len(change.Servers) > 3 {
+		t.Fatalf("DNS auto did not select two or three responsive providers: %+v", change)
 	}
 	status, err := e.DNSStatus()
 	if err != nil || !status.Managed || !status.ParallelQueries {

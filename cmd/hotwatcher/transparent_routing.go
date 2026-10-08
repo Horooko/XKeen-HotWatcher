@@ -105,7 +105,7 @@ func readLANInterception(parent context.Context, configDir string) lanIntercepti
 }
 
 func findIPTablesSave(name string) string {
-	for _, dir := range []string{"/opt/sbin", "/opt/bin", "/usr/sbin", "/sbin", "/usr/bin", "/bin"} {
+	for _, dir := range xkeenFirewallPath {
 		candidate := filepath.Join(dir, name)
 		if info, err := os.Stat(candidate); err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0111 != 0 {
 			return candidate
