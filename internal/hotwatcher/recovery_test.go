@@ -33,6 +33,15 @@ func TestRecoveryStatusDistinguishesHeldFromLeftoverLock(t *testing.T) {
 	if err != nil || status.HardSync == nil || !strings.Contains(status.SuggestedCommand, "recovery resume") {
 		t.Fatalf("incomplete hard-sync not reported: %+v, %v", status, err)
 	}
+	if err := WithLockNamed(c, "background sync", func() error {
+		busy, readErr := e.RecoveryStatus()
+		if readErr != nil || !strings.Contains(busy.SuggestedCommand, "другая операция") || !strings.Contains(busy.SuggestedCommand, "не блокирует выбор ключа") {
+			t.Fatalf("stale hard-sync marker was reported as the active operation: %+v, %v", busy, readErr)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(c.StateDir, "pending.json"), []byte("pending"), 0600); err != nil {
 		t.Fatal(err)
 	}

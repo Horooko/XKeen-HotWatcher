@@ -13,7 +13,10 @@
   let currentActivity = null;
   let webJob = null;
   let dnsRefreshing = false;
-  const pageTitles = { overview: "Обзор подключения", keys: "Управление ключами", "url-test": "Проверка сайтов", dns: "DNS Xray", system: "XKeen и Xray", updates: "Обновления" };
+  let previousLAN = null;
+  let statusReport = null;
+  let statusReportLoading = false;
+  const pageTitles = { overview: "Обзор подключения", keys: "Управление ключами", "url-test": "Проверка сайтов", dns: "DNS Xray", statuses: "Отчёт о состоянии", system: "XKeen и Xray", updates: "Обновления" };
 
   async function api(path, options = {}) {
     let response;
@@ -116,6 +119,9 @@
     text("operationIcon", state === "succeeded" ? "✓" : state === "failed" ? "!" : "↻");
   }
   function showLogin(error) {
+    statusReport = null;
+    $("statusReportActions").hidden = true;
+    $("statusReportSections").replaceChildren();
     $("loginScreen").hidden = false;
     $("appScreen").hidden = true;
     if (error) { $("loginError").hidden = false; text("loginError", error); }
@@ -147,6 +153,47 @@
     if (className) el.className = className;
     if (content != null) el.textContent = content;
     return el;
+  }
+  function renderStatusReport(report) {
+    const sections = $("statusReportSections");
+    sections.replaceChildren();
+    for (const section of Array.isArray(report.sections) ? report.sections : []) {
+      const card = make("section", "panel status-report-section");
+      card.append(make("h3", "", section.title || "Раздел"));
+      card.append(make("pre", "", Array.isArray(section.lines) ? section.lines.join("\n") : "Нет данных"));
+      sections.append(card);
+    }
+    text("statusReportState", "Собран " + dateLabel(report.generated_at) + " · " + sections.children.length + " разделов. Снимок не обновляется автоматически.");
+    $("statusReportActions").hidden = false;
+  }
+  async function generateStatusReport() {
+    if (statusReportLoading) return;
+    statusReportLoading = true;
+    statusReport = null;
+    $("statusReportActions").hidden = true;
+    $("statusReportSections").replaceChildren();
+    $("generateStatusReportButton").disabled = true;
+    text("statusReportState", "Собираю отчёт. Проверка выбранного ключа может занять несколько секунд…");
+    try {
+      const report = await api("/api/diagnostics/report");
+      if (!Array.isArray(report.sections) || typeof report.text !== "string") throw new Error("Сервер вернул неполный отчёт");
+      statusReport = report;
+      renderStatusReport(report);
+    } catch (error) {
+      text("statusReportState", "Не удалось собрать отчёт: " + error.message);
+      if (error.status !== 401) showBanner("Отчёт о состоянии", error.message, "failed");
+    } finally { statusReportLoading = false; $("generateStatusReportButton").disabled = false; }
+  }
+  function downloadStatusReport(format) {
+    if (!statusReport) return;
+    const content = format === "json" ? JSON.stringify(statusReport, null, 2) + "\n" : statusReport.text;
+    const filename = "hotwatcher-status-" + String(statusReport.generated_at || "report").slice(0, 19).replace(/[^0-9A-Za-z]/g, "-") + "." + format;
+    const link = document.createElement("a");
+    const fileURL = URL.createObjectURL(new Blob([content], { type: format === "json" ? "application/json;charset=utf-8" : "text/plain;charset=utf-8" }));
+    link.href = fileURL;
+    link.download = filename;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(fileURL), 1000);
   }
   // FetchedKey is embedded in KeyInventoryEntry. Its JSON fields are lowercase,
   // while the inventory flags keep their Go names. Accept legacy clients too.
@@ -275,7 +322,7 @@
     const completed = (report.progress_known || running) ? report.results.filter((item) => item.completed).length : report.results.length;
     const opened = report.results.filter((item) => item.ok).length;
     const route = report.mode === "main_xray" ? " · основной Xray" : report.mode === "isolated" ? " · отдельный Xray" : "";
-    text("resultSummary", "Проверено " + completed + " из " + report.results.length + " · HTTPS-ответ " + opened + " · ошибка проверки " + (completed - opened) + route);
+    text("resultSummary", "Проверено " + completed + " из " + report.results.length + " · HTTPS-ответ " + opened + " · ошибка проверки " + (completed - opened) + route + " · маршрут устройств в сети не проверен");
     badge($("resultBadge"), running ? "Идёт проверка" : completed < report.results.length ? "Прервано" : report.passed ? "Все проверки прошли" : "Есть ошибки", running || completed < report.results.length ? "neutral" : report.passed ? "good" : "bad");
     if (!running) lastReport = report;
     $("downloadReportButton").disabled = running || !lastReport;
@@ -293,7 +340,7 @@
     if (!lastReport?.results?.length) return;
     const opened = lastReport.results.filter((item) => item.ok).length;
     const completed = lastReport.progress_known ? lastReport.results.filter((item) => item.completed).length : lastReport.results.length;
-    const lines = ["Hot Watcher — отчёт URL Test", "Время: " + new Date(lastReport.time).toLocaleString("ru-RU"), "Ключ: " + (lastReport.tag || "—"), "Режим: " + (lastReport.mode === "main_xray" ? "основной Xray" : lastReport.mode === "isolated" ? "отдельный Xray" : "не указан"), "Проверено: " + completed + " из " + lastReport.results.length, "Успешных HTTPS-проверок: " + opened, ""];
+    const lines = ["Hot Watcher — отчёт URL Test", "Время: " + new Date(lastReport.time).toLocaleString("ru-RU"), "Ключ: " + (lastReport.tag || "—"), "Режим: " + (lastReport.mode === "main_xray" ? "основной Xray" : lastReport.mode === "isolated" ? "отдельный Xray" : "не указан"), "Проверено: " + completed + " из " + lastReport.results.length, "Успешных HTTPS-проверок: " + opened, "Маршрут устройств в сети, их DNS и перехват трафика XKeen не проверены.", ""];
     for (const item of lastReport.results) {
       const outcome = lastReport.progress_known && !item.completed ? "Не проверено" : item.ok ? "HTTPS-проверка успешна" : "HTTPS-проверка не прошла";
       lines.push(outcome + " | " + item.site + " | " + (item.status ? "HTTP " + item.status : item.reason || "") + (item.latency_ms != null ? " | " + Math.round(item.latency_ms) + " мс" : ""));
@@ -361,7 +408,8 @@
     text("emergencyCurrent", emergency ? "Сохранён: " + (emergency.Name || emergency.Tag) + (emergency.Selected ? " · сейчас выбран" : " · сейчас не выбран") : "Аварийной пометки нет");
     $("forgetEmergencyButton").disabled = !emergency;
     const keyWarnings = [];
-    if (interrupted) keyWarnings.push("Есть незавершённое восстановление Hot Watcher" + (recovery.hard_sync?.stage ? " (этап: " + recovery.hard_sync.stage + ")" : "") + ". Смена ключа и автовыбор могут быть заблокированы. " + (recovery.suggested_command ? "Рекомендация состояния: " + recovery.suggested_command + ". " : "") + "Восстановление не запускается автоматически.");
+    if (recovery.pending_transaction) keyWarnings.push("Есть незавершённое применение ключей. До завершения или отмены транзакции смена ключа и автовыбор заблокированы.");
+    if (recovery.hard_sync) keyWarnings.push("Сохранился журнал hard-sync" + (recovery.hard_sync.stage ? " (этап: " + recovery.hard_sync.stage + ")" : "") + ". Сам этот журнал не блокирует смену ключа и не подтверждает работу прокси. " + (recovery.suggested_command ? "Состояние: " + recovery.suggested_command + ". " : ""));
     if (keys.LastCheckSuccess === false) keyWarnings.push("Последняя синхронизация завершилась ошибкой; сохранённый список ключей не подтверждает успешные проверки.");
     if (list.length && !list.some((key) => key.Checked || key.Verified)) keyWarnings.push("У всех " + list.length + " ключей нет результатов проверки. «Нет данных» не означает, что ключи не работают.");
     $("keysWarning").hidden = keyWarnings.length === 0;
@@ -385,6 +433,24 @@
     } catch (error) { showBanner("Не удалось обновить панель", error.message, "failed"); }
     finally { refreshing = false; }
   }
+  function renderLAN(lan) {
+    if (!lan) return;
+    const previous = previousLAN && previousLAN.checked_at !== lan.checked_at ? previousLAN : null;
+    const reasons = { xray_inbound_unknown: "Не найден подходящий вход Xray в 03_inbounds.json", iptables_save_unavailable: "iptables-save недоступен", rules_unavailable: "Не удалось прочитать правила", xkeen_chain_missing: "Цепочка xkeen отсутствует", prerouting_jump_missing: "Нет перехода из PREROUTING", redirect_target_missing: "Нет перенаправления на порт Xray", route_disconnected: "Правило не связано с входом LAN" };
+    text("lanChecked", "Правила проверены: " + dateLabel(lan.checked_at) + ". Счётчики суммарные для всей сети.");
+    for (const [name, key] of [["TCP", "tcp"], ["UDP", "udp"], ["IPv6TCP", "tcp_ipv6"], ["IPv6UDP", "udp_ipv6"]]) {
+      const path = lan[key] || {};
+      const before = previous?.[key];
+      text("lan" + name + "State", !path.known ? "Проверка недоступна" : path.present ? "Правило найдено" : "Правило отсутствует");
+      let detail = path.missing ? reasons[path.missing] || "Правило не подтверждено" : "Порт Xray: " + (path.expected_port || "?");
+      if (path.known) {
+        detail += ". Пакеты: вход " + (path.ingress_packets ?? 0) + ", в Xray " + (path.redirected_packets ?? 0);
+        if (before && before.known && Number(path.redirected_packets) >= Number(before.redirected_packets)) detail += "; с прошлого снимка +" + (Number(path.redirected_packets) - Number(before.redirected_packets));
+      }
+      text("lan" + name + "Detail", detail);
+    }
+    if (!previousLAN || previousLAN.checked_at !== lan.checked_at) previousLAN = lan;
+  }
   function renderSystem(state) {
     const checked = !!state.checked_at && !state.checked_at.startsWith("0001");
     const label = !checked ? "Проверяю" : !state.installed ? "Не найден" : state.command_ok ? "Статус получен" : "Установлен, ошибка команды статуса";
@@ -401,6 +467,7 @@
     text("xrayLogText", (state.xray_error_log || []).join("\n") || (logSettingsUnknown ? "Не удалось прочитать настройки журнала Xray." : errorPathUnknown ? "Путь журнала ошибок в конфигурации Xray не распознан." : state.xray_log_level === "none" ? "Журнал ошибок отключён в конфигурации Xray: loglevel = none." : !state.xray_error_path ? "Запись в файл отключена в конфигурации Xray." : "Журнал ошибок пуст или не создан. Это не подтверждает исправность Xray."));
     text("xrayAccessLogDetail", accessPathUnknown ? "Путь не определён" : state.xray_access_path || "Файл отключён");
     text("xrayAccessLogText", (state.xray_access_log || []).join("\n") || (logSettingsUnknown ? "Не удалось прочитать настройки журнала Xray." : accessPathUnknown ? "Путь журнала доступа в конфигурации Xray не распознан." : !state.xray_access_path ? "Журнал доступа отключён в конфигурации Xray." : "Журнал доступа пуст или не создан."));
+    renderLAN(state.lan_interception);
   }
   async function refreshSystem() {
     if (systemRefreshing) return;
@@ -600,6 +667,9 @@
   $("testSelectedButton").addEventListener("click", () => startAction("url-test"));
   $("economyChecks").addEventListener("change", saveProbeMode);
   $("downloadReportButton").addEventListener("click", downloadReport);
+  $("generateStatusReportButton").addEventListener("click", generateStatusReport);
+  $("downloadStatusTextButton").addEventListener("click", () => downloadStatusReport("txt"));
+  $("downloadStatusJSONButton").addEventListener("click", () => downloadStatusReport("json"));
   $("pinSelectedButton").addEventListener("click", () => { const key = inventoryKeys(current?.keys).find((item) => item.Selected); if (key) startAction("pin", key.Tag); });
   $("autoButton").addEventListener("click", () => startAction("auto"));
   $("emergencyButton").addEventListener("click", startEmergency);

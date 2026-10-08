@@ -413,7 +413,17 @@ func (w *webUI) handler() http.Handler {
 			return
 		}
 		_, _, system := w.health.snapshot()
+		lan := readLANInterception(r.Context(), w.config.ConfigDir)
+		system.LAN = &lan
 		jsonResponse(out, 200, system)
+	})
+	mux.HandleFunc("GET /api/diagnostics/report", func(out http.ResponseWriter, r *http.Request) {
+		if _, ok := w.session(r); !ok {
+			apiError(out, 401, "требуется вход")
+			return
+		}
+		out.Header().Set("Cache-Control", "no-store")
+		jsonResponse(out, 200, w.generateStatusReport(r.Context()))
 	})
 	mux.HandleFunc("GET /api/update", func(out http.ResponseWriter, r *http.Request) {
 		if _, ok := w.session(r); !ok {
@@ -898,7 +908,7 @@ func serveWebUI(ctx context.Context, c hw.Config, e *hw.Engine) error {
 	servers := make([]*http.Server, 0, len(listeners))
 	finished := make(chan error, len(listeners))
 	for _, listener := range listeners {
-		server := &http.Server{Handler: w.handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 40 * time.Second, IdleTimeout: 45 * time.Second, MaxHeaderBytes: 8192}
+		server := &http.Server{Handler: w.handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 90 * time.Second, IdleTimeout: 45 * time.Second, MaxHeaderBytes: 8192}
 		servers = append(servers, server)
 		go func() {
 			serveErr := server.Serve(listener)
