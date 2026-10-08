@@ -13,11 +13,15 @@ type probeModeSettings struct {
 
 func (c Config) probeModePath() string { return filepath.Join(c.StateDir, "probe-mode.json") }
 
-// Economy checks use the running Xray. Existing installations default to on.
+// Live checks use the running Xray and change its routing temporarily. Fresh
+// and existing installations use isolated checks unless explicitly opted in.
 func (c Config) EconomyChecks() (bool, error) {
+	if c.ForceIsolatedChecks || !c.AllowLiveProbes {
+		return false, nil
+	}
 	var settings probeModeSettings
 	if err := mustJSON(c.probeModePath(), &settings); os.IsNotExist(err) {
-		return true, nil
+		return false, nil
 	} else if err != nil {
 		return false, errors.New("не удалось прочитать режим проверки")
 	}
@@ -28,8 +32,28 @@ func (c Config) EconomyChecks() (bool, error) {
 }
 
 func (e *Engine) SetEconomyChecks(enabled bool) error {
+	if enabled && !e.C.AllowLiveProbes {
+		return errors.New("проверки через основной Xray отключены; для явного разрешения задайте allow_live_probes в локальной конфигурации")
+	}
 	if err := privateDir(e.C.StateDir); err != nil {
 		return err
 	}
 	return atomicWrite(e.C.probeModePath(), encode(probeModeSettings{Schema: 1, EconomyChecks: enabled}), 0600)
+}
+
+// Diagnostic calls must never add temporary rules to the production Xray,
+// even when the operator explicitly allows live probes for key operations.
+func (e *Engine) isolatedChecks() *Engine {
+	copy := *e
+	copy.C.ForceIsolatedChecks = true
+	switch runtime := e.R.(type) {
+	case Xray:
+		runtime.C = copy.C
+		copy.R = runtime
+	case *Xray:
+		isolated := *runtime
+		isolated.C = copy.C
+		copy.R = &isolated
+	}
+	return &copy
 }

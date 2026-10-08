@@ -95,7 +95,7 @@ func (e *Engine) RecoveryStatus() (RecoverySnapshot, error) {
 	case result.Lock.Busy:
 		result.SuggestedCommand = "операция ещё выполняется; повторите recovery status после её завершения"
 	case result.HardSync != nil && result.HardSync.XKeenMayBeStopped:
-		result.SuggestedCommand = "hotwatcher recovery resume (запустить XKeen и продолжить безопасное восстановление)"
+		result.SuggestedCommand = "hotwatcher recovery resume (проверить XKeen и продолжить безопасное восстановление)"
 	case result.PendingTransaction:
 		result.SuggestedCommand = "hotwatcher recovery resume или hotwatcher recovery abort"
 	case result.HardSync != nil:

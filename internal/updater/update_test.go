@@ -256,6 +256,7 @@ func TestUpdaterTracksServersWithoutCountingXrayHelpers(t *testing.T) {
 	root := t.TempDir()
 	binary := "/opt/sbin/xray"
 	stateDir := "/opt/var/lib/hotwatcher"
+	configDir := "/opt/etc/xray/configs"
 	writeProcess := func(pid, start string, args ...string) {
 		t.Helper()
 		dir := filepath.Join(root, pid)
@@ -281,14 +282,15 @@ func TestUpdaterTracksServersWithoutCountingXrayHelpers(t *testing.T) {
 	writeProcess("201", "11", binary, "run", "-confdir", "/opt/etc/xray/configs")
 	writeProcess("202", "12", binary, "api", "bi", "--server=127.0.0.1:10085", "proxy")
 	writeProcess("203", "13", binary, "run", "-config", stateDir+"/probe-1/config.json")
-	before, err := scanXrayIdentities(root, binary, stateDir)
+	writeProcess("204", "14", binary, "run", "-config", "/tmp/isolated-xray.json")
+	before, err := scanXrayIdentities(root, binary, configDir, stateDir)
 	if err != nil || len(before) != 2 || before[0].PID != 200 || before[1].PID != 201 {
 		t.Fatalf("wrong server snapshot: %+v %v", before, err)
 	}
 	if err := os.WriteFile(filepath.Join(root, "201", "cmdline"), []byte(binary+"\x00run\x00-confdir\x00/opt/etc/xray/other\x00"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	after, err := scanXrayIdentities(root, binary, stateDir)
+	after, err := scanXrayIdentities(root, binary, configDir, stateDir)
 	if err != nil || slices.Equal(before, after) {
 		t.Fatalf("changed server escaped identity check: %+v %v", after, err)
 	}
@@ -297,7 +299,7 @@ func TestUpdaterTracksServersWithoutCountingXrayHelpers(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	stopped, err := scanXrayIdentities(root, binary, stateDir)
+	stopped, err := scanXrayIdentities(root, binary, configDir, stateDir)
 	if err != nil || len(stopped) != 0 {
 		t.Fatalf("helper processes should not block a recovery update: %+v %v", stopped, err)
 	}

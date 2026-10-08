@@ -230,10 +230,10 @@ func xrayIdentities() ([]ProcessIdentity, error) {
 	if err != nil {
 		return nil, err
 	}
-	return scanXrayIdentities("/proc", c.XrayBinary, c.StateDir)
+	return scanXrayIdentities("/proc", c.XrayBinary, c.ConfigDir, c.StateDir)
 }
 
-func scanXrayIdentities(procDir, binary, stateDir string) ([]ProcessIdentity, error) {
+func scanXrayIdentities(procDir, binary, configDir, stateDir string) ([]ProcessIdentity, error) {
 	found := []ProcessIdentity{}
 	entries, e := os.ReadDir(procDir)
 	if e != nil {
@@ -259,7 +259,7 @@ func scanXrayIdentities(procDir, binary, stateDir string) ([]ProcessIdentity, er
 		if e != nil {
 			return found, e
 		}
-		if !hw.IsXrayServerCommand(strings.Split(strings.TrimRight(string(args), "\x00"), "\x00"), binary, stateDir) {
+		if !hw.IsXrayServerCommand(strings.Split(strings.TrimRight(string(args), "\x00"), "\x00"), binary, configDir, stateDir) {
 			continue
 		}
 		stat, e := os.ReadFile(filepath.Join(base, "stat"))
@@ -318,7 +318,7 @@ func selectedRuntime() (runtimeSnapshot, error) {
 	if e != nil {
 		return runtimeSnapshot{}, e
 	}
-	v, e := hw.New(c).Status()
+	v, e := hw.StatusWithProductionXray(c, "/proc")
 	if e != nil {
 		return runtimeSnapshot{}, e
 	}

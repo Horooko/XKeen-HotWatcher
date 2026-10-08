@@ -68,7 +68,7 @@ func TestURLTestSitesEditableAndSafe(t *testing.T) {
 	}
 }
 
-func TestURLTestRunsOnceForChosenCandidate(t *testing.T) {
+func TestURLTestTriesNextMeasuredCandidate(t *testing.T) {
 	e, runtime, raw := setupEngine(t)
 	*raw = uri(testUUID, "FI") + "\n" + uri("00000000-0000-4000-8000-000000000002", "DE")
 	parsed, err := Parse([]byte(*raw), e.C)
@@ -79,12 +79,12 @@ func TestURLTestRunsOnceForChosenCandidate(t *testing.T) {
 	runtime.latencies = map[string]time.Duration{first: 10 * time.Millisecond, second: 25 * time.Millisecond}
 	runtime.urlFailures = map[string]bool{first: true}
 	selected, err := e.fastest(parsed.Nodes, "", time.Time{})
-	if err == nil || selected != "" || len(runtime.urlTests) != 1 || runtime.urlTests[0] != first {
-		t.Fatalf("URL Test retried another key after the chosen key failed: %s, %v, %v", selected, err, runtime.urlTests)
+	if err != nil || selected != second || len(runtime.urlTests) != 2 || runtime.urlTests[0] != first || runtime.urlTests[1] != second {
+		t.Fatalf("URL Test did not try a healthy alternative: %s, %v, %v", selected, err, runtime.urlTests)
 	}
 	delete(runtime.urlFailures, first)
 	selected, err = e.fastest(parsed.Nodes, "", time.Time{})
-	if err != nil || selected != first || len(runtime.urlTests) != 2 || runtime.urlTests[1] != first {
+	if err != nil || selected != first || len(runtime.urlTests) != 3 || runtime.urlTests[2] != first {
 		t.Fatalf("working chosen key was not accepted: %s, %v, %v", selected, err, runtime.urlTests)
 	}
 }
@@ -115,6 +115,7 @@ func TestSelectKeepsOldKeyWhenMandatorySiteFails(t *testing.T) {
 
 func TestEconomyURLTestOnlyAllowsSelectedKey(t *testing.T) {
 	e, runtime, raw := setupEngine(t)
+	e.C.AllowLiveProbes = true
 	*raw = uri(testUUID, "FI") + "\n" + uri("00000000-0000-4000-8000-000000000002", "DE")
 	if err := e.Sync(true); err != nil {
 		t.Fatal(err)
@@ -128,6 +129,9 @@ func TestEconomyURLTestOnlyAllowsSelectedKey(t *testing.T) {
 		other = s.Active[1].Tag
 	}
 	before := len(runtime.urlTests)
+	if err := e.SetEconomyChecks(true); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := e.URLTestKey(other); err == nil || len(runtime.urlTests) != before {
 		t.Fatalf("unselected key was tested in economy mode: %v", err)
 	}

@@ -13,8 +13,8 @@ type EmergencyImportResult struct {
 	Warning       string `json:"warning,omitempty"`
 }
 
-// Automatic releases the durable manual pin and evaluates saved keys now.
-// An unavailable network leaves the current key selected while auto mode stays on.
+// Automatic evaluates saved keys before releasing a manual pin. A failed
+// evaluation leaves both the current route and the manual mode unchanged.
 func (e *Engine) Automatic() (string, error) {
 	if err := e.ensureSubscriptionMode(); err != nil {
 		return "", err
@@ -32,22 +32,23 @@ func (e *Engine) Automatic() (string, error) {
 	if _, err = e.checkDisk(s); err != nil {
 		return "", err
 	}
-	if s.SelectionMode == "manual" {
-		next := *s
-		next.SelectionMode = ""
-		if err = atomicWrite(e.statePath(), encode(next), 0600); err != nil {
-			return "", err
-		}
-		e.event("automatic_selection_on", map[string]any{"selected": s.Selected})
-	}
 	best, err := e.fastest(s.Active, s.Selected, time.Time{})
 	if err != nil {
 		return s.Selected, err
 	}
 	if best != s.Selected {
-		if err = e.Select(best); err != nil {
+		if err = e.selectNode(best, false, true); err != nil {
 			return s.Selected, err
 		}
+	} else if s.SelectionMode == "manual" {
+		next := *s
+		next.SelectionMode = ""
+		if err = atomicWrite(e.statePath(), encode(next), 0600); err != nil {
+			return s.Selected, err
+		}
+	}
+	if s.SelectionMode == "manual" {
+		e.event("automatic_selection_on", map[string]any{"selected": best})
 	}
 	return best, nil
 }

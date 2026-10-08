@@ -37,6 +37,32 @@ func TestParseMixed(t *testing.T) {
 		t.Fatal(ss)
 	}
 }
+func TestOutboundMarkIsAppliedOnlyWhenConfigured(t *testing.T) {
+	c := Defaults()
+	plain, err := Parse([]byte(uri(testUUID, "FI")), c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := plain.Nodes[0].Outbound["streamSettings"].(map[string]any)["sockopt"]; ok {
+		t.Fatal("default should preserve unmarked outbounds")
+	}
+	c.OutboundMark = 255
+	marked, err := Parse([]byte(uri(testUUID, "FI")), c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings := marked.Nodes[0].Outbound["streamSettings"].(map[string]any)
+	if settings["sockopt"].(map[string]any)["mark"] != 255 {
+		t.Fatal(settings)
+	}
+	if marked.Nodes[0].Tag == plain.Nodes[0].Tag {
+		t.Fatal("mark change must change the outbound tag")
+	}
+	c.OutboundMark = -1
+	if err := c.Validate(); err == nil {
+		t.Fatal("negative mark accepted")
+	}
+}
 func TestBase64Formats(t *testing.T) {
 	for _, e := range []*base64.Encoding{base64.StdEncoding, base64.RawStdEncoding, base64.URLEncoding, base64.RawURLEncoding} {
 		p, err := Parse([]byte(e.EncodeToString([]byte(uri(testUUID, "FI")))), Defaults())

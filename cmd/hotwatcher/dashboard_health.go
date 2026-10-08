@@ -2,11 +2,8 @@ package main
 
 import (
 	"context"
-	"errors"
 	hw "local/xkeen-hot-watcher/internal/hotwatcher"
 	"os"
-	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -28,10 +25,16 @@ type dashboardHealth struct {
 
 func newDashboardHealth(c hw.Config, e *hw.Engine) *dashboardHealth {
 	return &dashboardHealth{
-		readStatus: e.Status,
+		readStatus: func() (map[string]any, error) {
+			running := xrayProcessRunning("/proc", c.XrayBinary, c.ConfigDir, c.StateDir)
+			if running == nil || !*running {
+				return e.StatusWithoutRuntime()
+			}
+			return e.Status()
+		},
 		readSystem: func(ctx context.Context) xkeenStatus {
-			running := xrayProcessRunning("/proc", c.XrayBinary, c.StateDir)
-			system := readXKeenStatusContext(ctx)
+			running := xrayProcessRunning("/proc", c.XrayBinary, c.ConfigDir, c.StateDir)
+			system := readXKeenStatusCommandWithConfig(ctx, xkeenCommand, c.ConfigDir)
 			system.XrayRunning = running
 			return system
 		},
@@ -93,41 +96,12 @@ func healthLoop(ctx context.Context, interval time.Duration, wake <-chan struct{
 
 // nil means /proc could not be inspected reliably, not that Xray is stopped.
 // Ignore our own `xray api`, validation and isolated probe subprocesses.
-func xrayProcessRunning(procDir, binary, stateDir string) *bool {
-	entries, err := os.ReadDir(procDir)
+func xrayProcessRunning(procDir, binary, configDir, stateDir string) *bool {
+	running, err := hw.XrayServerRunning(procDir, binary, configDir, stateDir)
 	if err != nil {
 		return nil
 	}
-	uncertain := false
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		if _, err := strconv.Atoi(entry.Name()); err != nil {
-			continue
-		}
-		b, err := os.ReadFile(filepath.Join(procDir, entry.Name(), "cmdline"))
-		if err != nil {
-			if !errors.Is(err, os.ErrNotExist) {
-				uncertain = true
-			}
-			continue
-		}
-		args := strings.Split(strings.TrimRight(string(b), "\x00"), "\x00")
-		if isXrayServer(args, binary, stateDir) {
-			running := true
-			return &running
-		}
-	}
-	if uncertain {
-		return nil
-	}
-	running := false
 	return &running
-}
-
-func isXrayServer(args []string, binary, stateDir string) bool {
-	return hw.IsXrayServerCommand(args, binary, stateDir)
 }
 
 func entwareStatusEnv() []string {

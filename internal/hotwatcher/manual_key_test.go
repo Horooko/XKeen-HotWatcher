@@ -4,6 +4,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestManualPinSurvivesSyncAndDisablesFailover(t *testing.T) {
@@ -31,6 +32,9 @@ func TestManualPinSurvivesSyncAndDisablesFailover(t *testing.T) {
 	if err := e.Pin(pinned); err != nil {
 		t.Fatal(err)
 	}
+	if manual, err := e.ManualMode(); err != nil || !manual {
+		t.Fatalf("manual mode was not visible to background daemon: %v, %v", manual, err)
+	}
 	runtime.failedTags = map[string]bool{pinned: true}
 	if _, err := e.CheckKey(); err == nil || runtime.override != pinned {
 		t.Fatalf("manual pin switched after a failed check: override=%s err=%v", runtime.override, err)
@@ -50,6 +54,38 @@ func TestManualPinSurvivesSyncAndDisablesFailover(t *testing.T) {
 	s, err = e.state()
 	if err != nil || s.SelectionMode != "" || s.Selected != other || runtime.override != other {
 		t.Fatalf("auto mode was not applied: %+v %v", s, err)
+	}
+	if manual, err := e.ManualMode(); err != nil || manual {
+		t.Fatalf("automatic mode remained frozen: %v, %v", manual, err)
+	}
+}
+
+func TestAutomaticClearsManualModeOnlyAfterHealthyCurrentKey(t *testing.T) {
+	e, runtime, _ := setupEngine(t)
+	if err := e.Sync(true); err != nil {
+		t.Fatal(err)
+	}
+	s, err := e.state()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Pin(s.Selected); err != nil {
+		t.Fatal(err)
+	}
+	runtime.failedTags = map[string]bool{s.Selected: true}
+	if _, err := e.Automatic(); err == nil {
+		t.Fatal("failed checks reported a successful mode change")
+	}
+	if manual, err := e.ManualMode(); err != nil || !manual {
+		t.Fatalf("failed checks released the manual pin: %v, %v", manual, err)
+	}
+	delete(runtime.failedTags, s.Selected)
+	selected, err := e.Automatic()
+	if err != nil || selected != s.Selected {
+		t.Fatalf("healthy current key did not enable auto: %s, %v", selected, err)
+	}
+	if manual, err := e.ManualMode(); err != nil || manual || runtime.override != s.Selected {
+		t.Fatalf("auto mode changed the current route: %v, %v", manual, err)
 	}
 }
 
@@ -95,5 +131,51 @@ func TestEmergencyKeyAppliesWithoutExposingURIAndSurvivesSync(t *testing.T) {
 	}
 	if tag, err := e.EmergencyTag(); err != nil || tag != "" {
 		t.Fatalf("emergency designation not cleared: %s %v", tag, err)
+	}
+}
+
+func TestAutomaticPrefersSubscriptionOverEmergencyAndKeepsFallbackOnFailure(t *testing.T) {
+	e, runtime, _ := setupEngine(t)
+	if err := e.Sync(true); err != nil {
+		t.Fatal(err)
+	}
+	secret := uri("00000000-0000-4000-8000-000000000003", "RESCUE")
+	result, err := e.ImportEmergency(secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := e.state()
+	if err != nil {
+		t.Fatal(err)
+	}
+	regular := ""
+	for _, node := range s.Active {
+		if !node.Emergency {
+			regular = node.Tag
+		}
+	}
+	if regular == "" {
+		t.Fatal("subscription key missing")
+	}
+	runtime.latencies = map[string]time.Duration{result.Tag: time.Millisecond, regular: 40 * time.Millisecond}
+	runtime.failedTags = map[string]bool{regular: true}
+	if _, err := e.Automatic(); err == nil {
+		t.Fatal("automatic selection accepted only the emergency fallback")
+	}
+	s, err = e.state()
+	if err != nil || s.Selected != result.Tag || s.SelectionMode != "manual" || runtime.override != result.Tag {
+		t.Fatalf("failed subscription checks changed the fallback: %+v, %v", s, err)
+	}
+	delete(runtime.failedTags, regular)
+	selected, err := e.Automatic()
+	if err != nil || selected != regular {
+		t.Fatalf("automatic selection ignored working subscription key: %s, %v", selected, err)
+	}
+	s, err = e.state()
+	if err != nil || s.Selected != regular || s.SelectionMode != "" || runtime.override != regular {
+		t.Fatalf("automatic selection did not apply subscription key: %+v, %v", s, err)
+	}
+	if emergency, ok := findNode(s.Active, result.Tag); !ok || !emergency.Emergency {
+		t.Fatal("emergency key was not kept as an explicit fallback")
 	}
 }

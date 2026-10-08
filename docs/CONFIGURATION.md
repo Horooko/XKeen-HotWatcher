@@ -38,6 +38,7 @@
 | `static_fallback_tag` | `vless-reality` | Тег статического VLESS outbound в `04_outbounds.json` для `hotwatcher stop` |
 | `ca_file` | пусто | Дополнительный PEM bundle для HTTPS; проверка TLS не отключается |
 | `allow_tls_nodes` | `false` | Разрешить VLESS+TLS наряду с Reality |
+| `allow_live_probes` | `false` | Явное разрешение временно менять правила работающего Xray при ручных проверках. Без него все проверки изолированы; фоновые, `doctor network` и `keys --check` изолированы всегда |
 | `allow_loopback_http_for_tests` | `false` | Только для локальных тестов: HTTP на IP loopback |
 
 Параметры `automatic_gc`/`grace_seconds` не измеряют число активных сессий. Включение

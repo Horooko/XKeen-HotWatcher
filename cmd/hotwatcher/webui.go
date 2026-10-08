@@ -43,6 +43,7 @@ type webJob struct {
 	EndedAt   *time.Time                `json:"ended_at,omitempty"`
 	Report    *hw.URLTestReport         `json:"report,omitempty"`
 	Emergency *hw.EmergencyImportResult `json:"emergency,omitempty"`
+	Result    any                       `json:"result,omitempty"`
 }
 
 var updaterHelperPath = "/opt/sbin/hotwatcher-updater"
@@ -331,7 +332,7 @@ func (w *webUI) handler() http.Handler {
 				warnings = append(warnings, err.Error())
 			}
 		}
-		jsonResponse(out, 200, map[string]any{"version": hw.Version, "status": status, "system": system, "keys": keys, "sites": sites, "economy_checks": economy, "last_test": last, "recovery": recovery, "warnings": warnings})
+		jsonResponse(out, 200, map[string]any{"version": hw.Version, "status": status, "system": system, "keys": keys, "sites": sites, "economy_checks": economy, "live_probes_allowed": w.config.AllowLiveProbes, "last_test": last, "recovery": recovery, "warnings": warnings})
 	})
 	mux.HandleFunc("GET /api/job", func(out http.ResponseWriter, r *http.Request) {
 		if _, ok := w.session(r); !ok {
@@ -343,6 +344,69 @@ func (w *webUI) handler() http.Handler {
 		w.mu.Unlock()
 		jsonResponse(out, 200, job)
 	})
+	mux.HandleFunc("GET /api/activity", func(out http.ResponseWriter, r *http.Request) {
+		if _, ok := w.session(r); !ok {
+			apiError(out, 401, "требуется вход")
+			return
+		}
+		activity, err := hw.ActivityStatus(w.config)
+		if err != nil {
+			apiError(out, 500, "не удалось прочитать состояние операции")
+			return
+		}
+		type jobSummary struct {
+			ID             uint64 `json:"id"`
+			Action         string `json:"action"`
+			State          string `json:"state"`
+			ElapsedSeconds int64  `json:"elapsed_seconds"`
+		}
+		var running *jobSummary
+		w.mu.Lock()
+		job := w.job
+		w.mu.Unlock()
+		if job.State == "running" {
+			elapsed := int64(0)
+			if !job.StartedAt.IsZero() {
+				elapsed = max(0, int64(time.Since(job.StartedAt).Seconds()))
+			}
+			running = &jobSummary{ID: job.ID, Action: job.Action, State: job.State, ElapsedSeconds: elapsed}
+			if !activity.Lock.Busy {
+				activity.Message = "Задача панели выполняется или ожидает блокировки"
+			}
+		}
+		jsonResponse(out, 200, struct {
+			hw.Activity
+			WebJob *jobSummary `json:"web_job,omitempty"`
+		}{activity, running})
+	})
+	for _, route := range []struct {
+		path string
+		stop bool
+	}{{"POST /api/activity/stop", true}, {"POST /api/activity/resume", false}} {
+		mux.HandleFunc(route.path, func(out http.ResponseWriter, r *http.Request) {
+			session, ok := w.session(r)
+			if !ok || !w.csrfOK(r, session) {
+				apiError(out, 403, "доступ запрещён")
+				return
+			}
+			var err error
+			if route.stop {
+				err = hw.StopBackground(w.config)
+			} else {
+				err = hw.ResumeBackground(w.config)
+			}
+			if err != nil {
+				apiError(out, 500, "не удалось изменить состояние фоновых задач")
+				return
+			}
+			activity, err := hw.ActivityStatus(w.config)
+			if err != nil {
+				apiError(out, 500, "не удалось прочитать состояние операции")
+				return
+			}
+			jsonResponse(out, 200, activity)
+		})
+	}
 	mux.HandleFunc("GET /api/system", func(out http.ResponseWriter, r *http.Request) {
 		if _, ok := w.session(r); !ok {
 			apiError(out, 401, "требуется вход")
@@ -363,6 +427,18 @@ func (w *webUI) handler() http.Handler {
 		}
 		jsonResponse(out, 200, state)
 	})
+	mux.HandleFunc("GET /api/dns", func(out http.ResponseWriter, r *http.Request) {
+		if _, ok := w.session(r); !ok {
+			apiError(out, 401, "требуется вход")
+			return
+		}
+		status, err := w.engine.DNSStatus()
+		if err != nil {
+			apiError(out, 500, err.Error())
+			return
+		}
+		jsonResponse(out, 200, status)
+	})
 	mux.HandleFunc("PUT /api/update/policy", func(out http.ResponseWriter, r *http.Request) {
 		session, ok := w.session(r)
 		if !ok || !w.csrfOK(r, session) {
@@ -381,6 +457,29 @@ func (w *webUI) handler() http.Handler {
 			return
 		}
 		jsonResponse(out, 200, map[string]string{"policy": input.Policy})
+	})
+	mux.HandleFunc("PUT /api/update/pin", func(out http.ResponseWriter, r *http.Request) {
+		session, ok := w.session(r)
+		if !ok || !w.csrfOK(r, session) {
+			apiError(out, 403, "доступ запрещён")
+			return
+		}
+		var input struct {
+			Version string `json:"version"`
+		}
+		if err := decodeRequest(r, &input); err != nil || len(input.Version) > 64 {
+			apiError(out, 400, "неверная версия")
+			return
+		}
+		command := []string{"unpin"}
+		if input.Version != "" {
+			command = []string{"pin", input.Version}
+		}
+		if err := updater.Command(command); err != nil {
+			apiError(out, 400, err.Error())
+			return
+		}
+		jsonResponse(out, 200, map[string]string{"pinned_version": input.Version})
 	})
 	mux.HandleFunc("PUT /api/sites", func(out http.ResponseWriter, r *http.Request) {
 		session, ok := w.session(r)
@@ -425,6 +524,53 @@ func (w *webUI) handler() http.Handler {
 		}
 		jsonResponse(out, 200, map[string]bool{"economy_checks": *input.EconomyChecks})
 	})
+	mux.HandleFunc("PUT /api/subscription-url", func(out http.ResponseWriter, r *http.Request) {
+		session, ok := w.session(r)
+		if !ok || !w.csrfOK(r, session) {
+			apiError(out, 403, "доступ запрещён")
+			return
+		}
+		var input struct {
+			URL string `json:"url"`
+		}
+		if err := decodeRequest(r, &input); err != nil || len(input.URL) > 8192 {
+			apiError(out, 400, "неверный адрес подписки")
+			return
+		}
+		if err := hw.WithLockWait(w.config, 30*time.Second, func() error { return w.config.SetSubscriptionURL(input.URL) }); err != nil {
+			apiError(out, 400, err.Error())
+			return
+		}
+		jsonResponse(out, 200, map[string]bool{"saved": true})
+	})
+	mux.HandleFunc("PUT /api/token", func(out http.ResponseWriter, r *http.Request) {
+		session, ok := w.session(r)
+		if !ok || !w.csrfOK(r, session) {
+			apiError(out, 403, "доступ запрещён")
+			return
+		}
+		var input struct {
+			Current string `json:"current"`
+			New     string `json:"new"`
+		}
+		if err := decodeRequest(r, &input); err != nil {
+			apiError(out, 400, err.Error())
+			return
+		}
+		w.mu.Lock()
+		valid := len(input.Current) == len(w.token) && subtle.ConstantTimeCompare([]byte(input.Current), []byte(w.token)) == 1
+		w.mu.Unlock()
+		if !valid {
+			apiError(out, 403, "текущий токен неверен")
+			return
+		}
+		if err := setWebToken(w.config, input.New); err != nil {
+			apiError(out, 400, err.Error())
+			return
+		}
+		w.syncToken()
+		jsonResponse(out, 200, map[string]bool{"changed": true})
+	})
 	mux.HandleFunc("POST /api/emergency", func(out http.ResponseWriter, r *http.Request) {
 		session, ok := w.session(r)
 		if !ok || !w.csrfOK(r, session) {
@@ -464,7 +610,7 @@ func (w *webUI) handler() http.Handler {
 			apiError(out, 400, err.Error())
 			return
 		}
-		if input.Action != "sync" && input.Action != "check-key" && input.Action != "url-test" && input.Action != "select" && input.Action != "pin" && input.Action != "auto" && input.Action != "forget-emergency" && input.Action != "update-enable" && input.Action != "update-check" && input.Action != "update-install" {
+		if !webActionAllowed(input.Action) {
 			apiError(out, 400, "неизвестная команда")
 			return
 		}
@@ -498,23 +644,115 @@ func (w *webUI) handler() http.Handler {
 	})
 }
 
+func webActionAllowed(action string) bool {
+	switch action {
+	case "sync", "check-key", "url-test", "select", "pin", "auto", "forget-emergency",
+		"startup-check",
+		"update-enable", "update-check", "update-install", "update-auto", "update-disable",
+		"update-pause-on", "update-pause-off", "update-download", "update-retry",
+		"dns-test", "dns-verify", "dns-on", "dns-off",
+		"doctor", "doctor-network", "plan", "keys-check", "adopt", "reconcile", "gc", "url-migrate",
+		"recover", "abort", "hold-on", "hold-off":
+		return true
+	}
+	return false
+}
+
 func (w *webUI) runAction(id uint64, action, tag string) {
 	defer w.health.refresh()
 	var report *hw.URLTestReport
+	var result any
 	var err error
 	if action == "update-enable" {
 		err = updater.Command([]string{"enable", "--notify"})
 	} else if action == "update-check" {
 		err = updater.Command([]string{"check"})
+	} else if action == "update-auto" {
+		err = updater.Command([]string{"enable"})
+	} else if action == "update-disable" {
+		err = updater.Command([]string{"disable"})
+	} else if action == "update-pause-on" {
+		err = updater.Command([]string{"pause", "on"})
+	} else if action == "update-pause-off" {
+		err = updater.Command([]string{"pause", "off"})
+	} else if action == "update-download" {
+		err = updater.Command([]string{"download"})
+	} else if action == "update-retry" {
+		err = updater.Command([]string{"retry"})
 	} else if action == "update-install" {
 		var cmd *exec.Cmd
 		cmd, err = startUpdateHelper()
 		if err == nil {
 			err = cmd.Wait()
 		}
+	} else if action == "dns-test" {
+		result, err = w.engine.DNSTest()
+	} else if action == "dns-verify" {
+		verification, verifyErr := w.engine.DNSVerify()
+		result, err = verification, verifyErr
+		if err == nil && !verification.Direct.Success && !verification.SelectedVLESS.Success {
+			err = errors.New("DNS не ответил ни через прямой, ни через выбранный VLESS-маршрут")
+		}
+	} else if action == "doctor-network" {
+		var network hw.NetworkDoctorReport
+		err = hw.WithLockWaitNamed(w.config, "web doctor-network", 30*time.Second, func() error {
+			network = w.engine.DoctorNetworkWithProgress(func(check hw.NetworkCheck) {
+				w.mu.Lock()
+				if w.job.ID == id {
+					w.job.Message = "Диагностика: " + check.Detail
+				}
+				w.mu.Unlock()
+			})
+			return nil
+		})
+		result = network
+		if err == nil && !network.Healthy {
+			err = errors.New("часть сетевых проверок не прошла; изучите отчёт")
+		}
+	} else if action == "doctor" {
+		result, err = w.engine.Doctor()
+	} else if action == "startup-check" {
+		check := checkXKeenStartup(context.Background(), w.config.OutboundMark)
+		result, err = check, startupCheckError(check)
+	} else if action == "plan" {
+		result, err = w.engine.Plan()
+	} else if action == "keys-check" {
+		err = hw.WithLockWaitNamed(w.config, "web keys-check", 30*time.Second, func() error {
+			var checkErr error
+			result, checkErr = w.engine.Keys()
+			return checkErr
+		})
 	} else {
-		err = hw.WithLockWait(w.config, 30*time.Second, func() error {
+		err = hw.WithLockWaitNamed(w.config, "web "+action, 30*time.Second, func() error {
 			switch action {
+			case "dns-on":
+				if _, err := os.Lstat(filepath.Join(w.config.StateDir, "pending.json")); err == nil {
+					return errors.New("сначала завершите операцию с ключами: recover или abort")
+				} else if !os.IsNotExist(err) {
+					return err
+				}
+				var change hw.DNSChange
+				change, err = w.engine.DNSAutoOn()
+				result = change
+				return err
+			case "dns-off":
+				return w.engine.DNSAutoOff()
+			case "adopt":
+				return w.engine.Sync(true)
+			case "reconcile":
+				return w.engine.Reconcile()
+			case "gc":
+				return w.engine.GC()
+			case "recover":
+				return w.engine.Recover()
+			case "abort":
+				return w.engine.Abort()
+			case "hold-on":
+				return w.engine.Hold(true)
+			case "hold-off":
+				return w.engine.Hold(false)
+			case "url-migrate":
+				return w.config.MigrateSubscriptionURL()
 			case "sync":
 				err := w.engine.Sync(false)
 				hw.WriteLastCheck(w.config, err == nil)
@@ -554,17 +792,19 @@ func (w *webUI) runAction(id uint64, action, tag string) {
 	}
 	ended := time.Now().UTC()
 	if errors.Is(err, hw.ErrBusy) {
-		err = errors.New("другая операция Hot Watcher ещё выполняется; повторите позже")
+		err = w.busyOperationError()
 	}
 	w.mu.Lock()
 	if w.job.ID == id {
-		w.job.EndedAt, w.job.Report = &ended, report
+		w.job.EndedAt, w.job.Report, w.job.Result = &ended, report, result
 		if err != nil {
 			w.job.State, w.job.Message = "failed", err.Error()
 		} else {
 			w.job.State, w.job.Message = "succeeded", "Готово"
 			if action == "update-install" {
 				w.job.Message = "Установка завершена; проверьте новую версию панели"
+			} else if action == "dns-on" || action == "dns-off" {
+				w.job.Message = "DNS-файл изменён. Проверьте xkeen -xtest и вне игры выполните xkeen -restart."
 			}
 		}
 	}
@@ -574,11 +814,14 @@ func (w *webUI) runAction(id uint64, action, tag string) {
 func (w *webUI) runEmergency(id uint64, uri string) {
 	defer w.health.refresh()
 	var result hw.EmergencyImportResult
-	err := hw.WithLockWait(w.config, 30*time.Second, func() error {
+	err := hw.WithLockWaitNamed(w.config, "web emergency", 30*time.Second, func() error {
 		var importErr error
 		result, importErr = w.engine.ImportEmergency(uri)
 		return importErr
 	})
+	if errors.Is(err, hw.ErrBusy) {
+		err = w.busyOperationError()
+	}
 	ended := time.Now().UTC()
 	w.mu.Lock()
 	if w.job.ID == id {
@@ -594,6 +837,14 @@ func (w *webUI) runEmergency(id uint64, uri string) {
 		}
 	}
 	w.mu.Unlock()
+}
+
+func (w *webUI) busyOperationError() error {
+	activity, err := hw.ActivityStatus(w.config)
+	if err != nil || !activity.Lock.Busy {
+		return errors.New("другая операция Hot Watcher ещё выполняется; состояние видно в разделе «Система»")
+	}
+	return fmt.Errorf("занято: %s (PID %d, %d сек); состояние видно в разделе «Система»", activity.Lock.Operation, activity.Lock.PID, activity.ElapsedSeconds)
 }
 
 // A separate session lets the signed updater stop and restart the Web UI

@@ -14,7 +14,7 @@ import (
 	"strings"
 )
 
-var Version = "0.3.4"
+var Version = "0.3.5"
 
 const TagPrefix = "main--VL--hw-"
 
@@ -50,7 +50,14 @@ type Config struct {
 	StaticFallbackTag              string   `json:"static_fallback_tag"`
 	CAFile                         string   `json:"ca_file"`
 	AllowTLS                       bool     `json:"allow_tls_nodes"`
-	AllowLoopbackHTTP              bool     `json:"allow_loopback_http_for_tests"`
+	// Live checks temporarily mutate production Xray routing. Require an
+	// explicit local configuration opt-in in addition to the UI setting.
+	AllowLiveProbes bool `json:"allow_live_probes"`
+	OutboundMark    int  `json:"outbound_mark"`
+	// Background daemon probes must not add temporary routing rules to the
+	// production Xray. This is an in-process setting, never read from JSON.
+	ForceIsolatedChecks bool `json:"-"`
+	AllowLoopbackHTTP   bool `json:"allow_loopback_http_for_tests"`
 }
 
 func Defaults() Config {
@@ -94,6 +101,9 @@ func (c Config) Validate() error {
 	}
 	if c.SelectionPolicy != "latency" && c.SelectionPolicy != "sticky" {
 		return errors.New("selection_policy must be latency or sticky")
+	}
+	if c.OutboundMark < 0 || c.OutboundMark > 2147483647 {
+		return errors.New("outbound_mark must be 0 (disabled) or a positive 32-bit policy mark")
 	}
 	if c.KeySwitchMinImprovementMS < 0 || c.KeySwitchMinImprovementMS > 5000 || c.KeySwitchMinImprovementPercent < 0 || c.KeySwitchMinImprovementPercent > 100 || c.KeySwitchCooldownSeconds < 0 || c.KeySwitchCooldownSeconds > 86400 {
 		return errors.New("key switch thresholds out of range")

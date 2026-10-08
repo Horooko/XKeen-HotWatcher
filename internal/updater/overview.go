@@ -3,23 +3,26 @@ package updater
 import (
 	"errors"
 	"os"
+	"path/filepath"
 	"time"
 )
 
 // Overview contains only the fields needed by the authenticated local Web UI.
 // It deliberately omits release URLs, file hashes and updater internals.
 type Overview struct {
-	Installed    string        `json:"installed"`
-	Available    string        `json:"available,omitempty"`
-	Verified     bool          `json:"verified"`
-	LastCheck    time.Time     `json:"last_check,omitempty"`
-	CheckFailed  bool          `json:"check_failed"`
-	Enabled      bool          `json:"enabled"`
-	Mode         string        `json:"mode"`
-	Policy       string        `json:"policy"`
-	PendingPhase string        `json:"pending_phase,omitempty"`
-	LastResult   *UpdateResult `json:"last_result,omitempty"`
-	StateInvalid bool          `json:"state_invalid"`
+	Installed     string        `json:"installed"`
+	Available     string        `json:"available,omitempty"`
+	Verified      bool          `json:"verified"`
+	LastCheck     time.Time     `json:"last_check,omitempty"`
+	CheckFailed   bool          `json:"check_failed"`
+	Enabled       bool          `json:"enabled"`
+	Mode          string        `json:"mode"`
+	Policy        string        `json:"policy"`
+	Paused        bool          `json:"paused"`
+	PinnedVersion string        `json:"pinned_version,omitempty"`
+	PendingPhase  string        `json:"pending_phase,omitempty"`
+	LastResult    *UpdateResult `json:"last_result,omitempty"`
+	StateInvalid  bool          `json:"state_invalid"`
 }
 
 func GetOverview() (Overview, error) {
@@ -30,7 +33,12 @@ func GetOverview() (Overview, error) {
 		return Overview{}, err
 	}
 	s := readState()
-	result := Overview{Installed: installedVersion(s), Available: s.Available, Verified: s.Verified, LastCheck: s.LastCheck, CheckFailed: s.Deferred != "", Enabled: c.Enabled, Mode: c.Mode, Policy: c.Policy, LastResult: readResult(), StateInvalid: s.Invalid}
+	result := Overview{Installed: installedVersion(s), Available: s.Available, Verified: s.Verified, LastCheck: s.LastCheck, CheckFailed: s.Deferred != "", Enabled: c.Enabled, Mode: c.Mode, Policy: c.Policy, PinnedVersion: c.PinnedVersion, LastResult: readResult(), StateInvalid: s.Invalid}
+	if _, pauseErr := os.Lstat(filepath.Join(Root, "pause")); pauseErr == nil {
+		result.Paused = true
+	} else if !os.IsNotExist(pauseErr) {
+		return Overview{}, errors.New("состояние паузы обновлений недоступно")
+	}
 	if journal, journalErr := readJournal(); journalErr == nil {
 		result.PendingPhase = journal.Phase
 	} else if !os.IsNotExist(journalErr) {

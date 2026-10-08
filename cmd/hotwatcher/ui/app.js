@@ -9,7 +9,11 @@
   let lastReport = null;
   let refreshing = false;
   let systemRefreshing = false;
-  const pageTitles = { overview: "Обзор подключения", keys: "Управление ключами", "url-test": "Проверка сайтов", system: "XKeen и Xray", updates: "Обновления" };
+  let activityRefreshing = false;
+  let currentActivity = null;
+  let webJob = null;
+  let dnsRefreshing = false;
+  const pageTitles = { overview: "Обзор подключения", keys: "Управление ключами", "url-test": "Проверка сайтов", dns: "DNS Xray", system: "XKeen и Xray", updates: "Обновления" };
 
   async function api(path, options = {}) {
     let response;
@@ -50,6 +54,59 @@
     const date = new Date(value);
     return Number.isNaN(date.getTime()) ? "Результата ещё нет" : date.toLocaleString("ru-RU", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
   }
+  function elapsedLabel(value) {
+    const seconds = Math.max(0, Math.floor(Number(value)));
+    if (!Number.isFinite(seconds)) return "—";
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor(seconds % 3600 / 60);
+    const rest = seconds % 60;
+    return (hours ? hours + " ч " : "") + (hours || minutes ? minutes + " мин " : "") + rest + " сек";
+  }
+  function renderActivity(state) {
+    currentActivity = state;
+    const lock = state?.lock || {};
+    const busy = lock.busy === true;
+    const paused = state?.background_paused === true;
+    const stopRequested = state?.stop_requested === true;
+    const serverJob = state?.web_job && ["queued", "waiting", "running"].includes(state.web_job.state) ? state.web_job : null;
+    const localJob = webJob && ["queued", "waiting", "running"].includes(webJob.state) ? webJob : null;
+    const visibleJob = serverJob || localJob;
+    text("activityState", busy ? (stopRequested ? "Завершает перед паузой: " : "Выполняется: ") + (lock.operation || "операция") : visibleJob ? "Задача панели: " + (visibleJob.action || "операция") : paused ? "Фоновые задачи приостановлены" : "Нет операции под общей блокировкой");
+    text("activityMessage", state?.message || (busy ? "Ожидайте завершения текущей операции." : visibleJob ? "Задача выполняется или ожидает блокировки." : paused ? "Новые фоновые задачи не запускаются." : "Задачи панели без блокировки могут выполняться отдельно."));
+    text("activityElapsed", busy ? elapsedLabel(state?.elapsed_seconds) : serverJob ? elapsedLabel(serverJob.elapsed_seconds) : "—");
+    $("activityWebJob").hidden = !visibleJob;
+    if (visibleJob) {
+      const sameLocalJob = serverJob && localJob?.id === serverJob.id;
+      const detail = serverJob ? sameLocalJob ? localJob.message : "выполняется или ожидает блокировки" : localJob.message || "ожидает завершения";
+      text("activityWebJob", (visibleJob.state === "running" ? "Запрос из панели: " : "В очереди панели: ") + (visibleJob.action || "операция") + " · " + detail + (busy && serverJob ? " · " + elapsedLabel(serverJob.elapsed_seconds) : ""));
+    }
+    $("stopActivityButton").disabled = state?.can_stop !== true || paused || stopRequested;
+    $("resumeActivityButton").hidden = !paused;
+    $("resumeActivityButton").disabled = !paused;
+  }
+  async function refreshActivity() {
+    if (activityRefreshing) return;
+    activityRefreshing = true;
+    try { renderActivity(await api("/api/activity")); }
+    catch (error) {
+      if (error.status !== 401) {
+        text("activityState", "Состояние операций недоступно");
+        text("activityMessage", error.message);
+        text("activityElapsed", "—");
+        $("stopActivityButton").disabled = true;
+        $("resumeActivityButton").hidden = true;
+      }
+    } finally { activityRefreshing = false; }
+  }
+  async function controlActivity(path, title) {
+    $("stopActivityButton").disabled = true;
+    $("resumeActivityButton").disabled = true;
+    try {
+      const result = await api(path, { method: "POST", body: "{}" });
+      showBanner(title, result.message || "Состояние фоновых задач обновлено.", "succeeded");
+    } catch (error) { showBanner(title, error.message, "failed"); }
+    await refreshActivity();
+  }
   function showBanner(title, message, state = "running") {
     const box = $("operationBanner");
     box.hidden = false;
@@ -69,6 +126,7 @@
     $("appScreen").hidden = false;
     navigate();
     refreshSystem();
+    refreshActivity();
   }
 
   function activePage() { const name = location.hash.slice(1); return pageTitles[name] ? name : "overview"; }
@@ -79,6 +137,8 @@
     text("pageCaption", pageTitles[page]);
     window.scrollTo(0, 0);
     if (csrf && page === "system") refreshSystem();
+    if (csrf && page === "system") refreshActivity();
+    if (csrf && page === "dns") refreshDNS();
     if (csrf && page === "updates") refreshUpdate();
   }
 
@@ -102,6 +162,7 @@
   }
   function renderKeys(inventory) {
     const keys = inventoryKeys(inventory);
+    const live = current?.status?.api_reachable === true && current?.status?.balancer_api_reachable === true && current?.status?.selected_present === true && current?.status?.balancer_pin_matches === true && current?.system?.xray_running === true;
     const body = $("keysBody");
     const rows = document.createDocumentFragment();
     text("keyCount", keys.length + " КЛЮЧЕЙ");
@@ -117,10 +178,10 @@
       const identityWrap = make("div", "key-name");
       identityWrap.append(make("span", "key-avatar", Array.from(name)[0].toLocaleUpperCase("ru-RU")));
       const identityText = make("span");
-      identityText.append(make("strong", "", name + (key.Emergency ? " · Аварийный" : "")), make("small", "mono", key.Tag || "—"));
+      identityText.append(make("strong", "", name + (key.Emergency ? " · Аварийная пометка" : "")), make("small", "mono", key.Tag || "—"));
       identityWrap.append(identityText); identity.append(identityWrap);
       const state = make("td");
-      state.append(make("span", "pill " + (key.Selected ? "" : key.Applied ? "muted" : "warning"), key.Selected ? "Выбран" : key.Applied ? "Применён" : "Не применён"));
+      state.append(make("span", "pill " + (key.Selected && live ? "" : key.Applied ? "muted" : "warning"), key.Selected ? (live ? "Выбран в Xray" : "Сохранённый выбор") : key.Applied ? "В файле" : "Не применён"));
       const checked = make("td");
       checked.append(make("span", "pill " + (key.Verified ? "" : key.Checked ? "bad" : "muted"), key.Verified ? "Проверен без VPN" : key.Checked ? "Не прошёл" : "Нет данных"));
       const actions = make("td", "actions-col");
@@ -214,15 +275,15 @@
     const completed = (report.progress_known || running) ? report.results.filter((item) => item.completed).length : report.results.length;
     const opened = report.results.filter((item) => item.ok).length;
     const route = report.mode === "main_xray" ? " · основной Xray" : report.mode === "isolated" ? " · отдельный Xray" : "";
-    text("resultSummary", "Проверено " + completed + " из " + report.results.length + " · открывается " + opened + " · не открывается " + (completed - opened) + route);
-    badge($("resultBadge"), running ? "Идёт проверка" : completed < report.results.length ? "Прервано" : report.passed ? "Все открылись" : "Есть ошибки", running || completed < report.results.length ? "neutral" : report.passed ? "good" : "bad");
+    text("resultSummary", "Проверено " + completed + " из " + report.results.length + " · HTTPS-ответ " + opened + " · ошибка проверки " + (completed - opened) + route);
+    badge($("resultBadge"), running ? "Идёт проверка" : completed < report.results.length ? "Прервано" : report.passed ? "Все проверки прошли" : "Есть ошибки", running || completed < report.results.length ? "neutral" : report.passed ? "good" : "bad");
     if (!running) lastReport = report;
     $("downloadReportButton").disabled = running || !lastReport;
     for (const item of report.results) {
       const row = make("div", "result-row" + (item.ok ? " ok" : ""));
       row.append(make("span", "result-dot"), make("span", "result-site", siteName(item.site)));
       const pending = (running || report.progress_known) && !item.completed;
-      const detail = pending ? running ? "Ожидает проверки" : "Не проверено" : item.ok ? "Открывается · " + Math.round(item.latency_ms || 0) + " мс" : "Не открывается · " + (item.reason || (item.status ? "HTTP " + item.status : "Ошибка")) + (item.reason && item.status ? " · HTTP " + item.status : "");
+      const detail = pending ? running ? "Ожидает проверки" : "Не проверено" : item.ok ? "HTTPS-ответ · " + Math.round(item.latency_ms || 0) + " мс" : "Проверка не прошла · " + (item.reason || (item.status ? "HTTP " + item.status : "Ошибка")) + (item.reason && item.status ? " · HTTP " + item.status : "");
       row.append(make("span", "result-detail", detail));
       list.append(row);
     }
@@ -232,9 +293,9 @@
     if (!lastReport?.results?.length) return;
     const opened = lastReport.results.filter((item) => item.ok).length;
     const completed = lastReport.progress_known ? lastReport.results.filter((item) => item.completed).length : lastReport.results.length;
-    const lines = ["Hot Watcher — отчёт URL Test", "Время: " + new Date(lastReport.time).toLocaleString("ru-RU"), "Ключ: " + (lastReport.tag || "—"), "Режим: " + (lastReport.mode === "main_xray" ? "основной Xray" : lastReport.mode === "isolated" ? "отдельный Xray" : "не указан"), "Проверено: " + completed + " из " + lastReport.results.length, "Открывается: " + opened, ""];
+    const lines = ["Hot Watcher — отчёт URL Test", "Время: " + new Date(lastReport.time).toLocaleString("ru-RU"), "Ключ: " + (lastReport.tag || "—"), "Режим: " + (lastReport.mode === "main_xray" ? "основной Xray" : lastReport.mode === "isolated" ? "отдельный Xray" : "не указан"), "Проверено: " + completed + " из " + lastReport.results.length, "Успешных HTTPS-проверок: " + opened, ""];
     for (const item of lastReport.results) {
-      const outcome = lastReport.progress_known && !item.completed ? "Не проверено" : item.ok ? "Открывается" : "Не открывается";
+      const outcome = lastReport.progress_known && !item.completed ? "Не проверено" : item.ok ? "HTTPS-проверка успешна" : "HTTPS-проверка не прошла";
       lines.push(outcome + " | " + item.site + " | " + (item.status ? "HTTP " + item.status : item.reason || "") + (item.latency_ms != null ? " | " + Math.round(item.latency_ms) + " мс" : ""));
     }
     const link = document.createElement("a");
@@ -247,8 +308,9 @@
 
   function renderOverview(data) {
     current = data;
-    $("economyChecks").checked = data.economy_checks !== false;
-    text("probeModeNote", data.economy_checks === false ? "Отдельный Xray проверяет выбранный ключ; URL Test запускается только для одного кандидата." : "URL Test проверяет выбранный ключ один раз через основной Xray. При неудаче текущий ключ сохраняется.");
+    $("economyChecks").checked = data.economy_checks === true;
+    $("economyChecks").disabled = data.live_probes_allowed !== true;
+    text("probeModeNote", data.live_probes_allowed !== true ? "Проверки изолированы от рабочего Xray. Режим с изменением живых правил доступен только при явном allow_live_probes в локальном конфиге." : data.economy_checks === true ? "Проверка временно меняет правила основного Xray; используйте только при осознанной необходимости." : "Отдельный Xray проверяет выбранный ключ; рабочие правила маршрутизации не меняются.");
     const status = data.status || {};
     const keys = data.keys || {};
     const list = inventoryKeys(keys);
@@ -258,15 +320,20 @@
     const system = data.system || {};
     const processRunning = system.xray_running;
     text("versionLabel", "v" + (data.version || "—"));
-    const xrayLabel = online ? "API доступен" : processRunning === true ? "процесс запущен" : !checked ? "проверяю" : processRunning === false ? "процесс не найден" : "ошибка проверки API";
+    const xrayLabel = processRunning === false ? "процесс не найден" : online ? processRunning === true ? "API доступен" : "API доступен; процесс не подтверждён" : processRunning === true ? "процесс запущен" : !checked ? "проверяю" : "ошибка проверки API";
     text("topStatus", "Xray: " + xrayLabel);
-    $("topStatus").className = "top-status" + (online ? " online" : checked && processRunning === false ? " offline" : "");
-    badge($("connectionBadge"), online ? "API доступен" : !checked ? "Проверяю" : "Управление недоступно", online ? "good" : "neutral");
+    $("topStatus").className = "top-status" + (online && processRunning === true ? " online" : checked && processRunning === false ? " offline" : "");
+    badge($("connectionBadge"), online ? processRunning === true ? "API доступен" : "API доступен · процесс не подтверждён" : !checked ? "Проверяю" : "Управление недоступно", online && processRunning === true ? "good" : "neutral");
     if (data.system) renderSystem(system);
+    const pinMismatch = online && status.adopted && (status.selected_present === false || status.balancer_pin_matches === false);
+    const diagnosis = !checked ? "Проверяю процесс Xray и API." : processRunning === false ? "Xray не запущен. Выбранный ключ сохранён в файле, но сейчас не обслуживает трафик. Проверьте запуск XKeen и ошибки Xray." : processRunning !== true ? "Основной процесс Xray не удалось подтвердить. Даже если API отвечает, состояние ключа и маршрута пока неизвестно." : !online ? "Xray запущен, но API управления недоступен. Проверка ключа через HotWatcher невозможна; проверьте конфигурацию API." : pinMismatch ? "Xray запущен, но сохранённый ключ сейчас не закреплён в балансировщике. Выполните «Согласовать Xray» и проверьте отдельные HTTPS-адреса." : "Xray и API управления доступны. URL Test проверяет только отдельные HTTPS-адреса; работу приложений он не подтверждает.";
+    text("systemDiagnosis", diagnosis);
+    $("systemDiagnosis").className = "system-diagnosis" + (checked && (processRunning === false || !online || pinMismatch) ? " failed" : checked && online && processRunning === true ? " ready" : "");
     text("selectedName", selected?.Name || (status.adopted ? "Ключ не найден" : "Не подключено"));
     text("selectedTag", selected?.Tag || status.selected || "—");
+    $("selectedOrigin").hidden = !selected?.Emergency;
     text("apiMetric", online ? "Доступен" : checked ? "Ошибка проверки" : "Проверяю");
-    text("apiDetail", online ? "HandlerService и RoutingService доступны. Трафик проверяется через URL Test." : !checked ? "Идёт фоновая проверка API" : processRunning === true ? "Процесс Xray запущен, но API управления недоступен. Это не означает обрыв VPN." : "Проверьте локальный API и службы HandlerService / RoutingService. Состояние трафика не проверено.");
+    text("apiDetail", online ? "HandlerService и RoutingService доступны. Работа приложений этим не подтверждена." : !checked ? "Идёт фоновая проверка API" : processRunning === true ? "Процесс Xray запущен, но API управления недоступен. Это не означает обрыв VPN." : "Проверьте локальный API и службы HandlerService / RoutingService. Состояние трафика не проверено.");
     text("keyMetric", String(status.active_nodes ?? list.filter((item) => item.Applied).length));
     text("testMetric", String((data.sites || []).length));
     text("testDetail", "Обязательных сайтов");
@@ -278,14 +345,27 @@
     const interrupted = !!recovery.pending_transaction || !!recovery.hard_sync;
     text("recoveryState", interrupted ? "Нужны действия" : "В норме");
     text("recoveryDetail", recovery.suggested_command || "Незавершённых операций нет");
+    text("holdState", status.hold ? "Обновление подписки приостановлено" : "Фоновая синхронизация включена");
+    $("holdOnButton").disabled = !!status.hold;
+    $("holdOffButton").disabled = !status.hold;
+    $("adoptButton").disabled = !!status.adopted;
+    $("recoverButton").disabled = !recovery.pending_transaction || !!recovery.hard_sync;
+    $("abortButton").disabled = !recovery.pending_transaction || !!recovery.hard_sync;
     const manual = status.selection_mode === "manual";
-    text("modeTitle", manual ? "Закреплённый ключ" : "Автоматический выбор");
-    text("modeDescription", manual ? "Hot Watcher не сменит ключ автоматически, даже если проверка обнаружит ошибку." : "Hot Watcher сравнивает задержку и доступность обязательных сайтов.");
+    text("modeTitle", manual ? "Закреплён вручную" : "Автовыбор включён");
+    text("modeDescription", manual ? "Текущий ключ закреплён вручную; фоновая синхронизация и проверки приостановлены. При ошибке проверки включение Auto не снимет закрепление." : "Текущий ключ сохраняется, пока другой не пройдёт проверки и условия переключения. Повторная проверка всех ключей может занять несколько минут и тоже оставить прежний выбор.");
     $("pinSelectedButton").disabled = !selected || manual;
-    $("autoButton").disabled = !manual;
+    text("autoButton", manual ? "Включить автовыбор" : "Повторить выбор");
+    $("autoButton").disabled = !status.adopted;
     const emergency = list.find((key) => key.Emergency);
-    text("emergencyCurrent", emergency ? "Добавлен: " + (emergency.Name || emergency.Tag) : "Не добавлен");
+    text("emergencyCurrent", emergency ? "Сохранён: " + (emergency.Name || emergency.Tag) + (emergency.Selected ? " · сейчас выбран" : " · сейчас не выбран") : "Аварийной пометки нет");
     $("forgetEmergencyButton").disabled = !emergency;
+    const keyWarnings = [];
+    if (interrupted) keyWarnings.push("Есть незавершённое восстановление Hot Watcher" + (recovery.hard_sync?.stage ? " (этап: " + recovery.hard_sync.stage + ")" : "") + ". Смена ключа и автовыбор могут быть заблокированы. " + (recovery.suggested_command ? "Рекомендация состояния: " + recovery.suggested_command + ". " : "") + "Восстановление не запускается автоматически.");
+    if (keys.LastCheckSuccess === false) keyWarnings.push("Последняя синхронизация завершилась ошибкой; сохранённый список ключей не подтверждает успешные проверки.");
+    if (list.length && !list.some((key) => key.Checked || key.Verified)) keyWarnings.push("У всех " + list.length + " ключей нет результатов проверки. «Нет данных» не означает, что ключи не работают.");
+    $("keysWarning").hidden = keyWarnings.length === 0;
+    if (keyWarnings.length) text("keysWarning", keyWarnings.join(" "));
     renderKeys(keys);
     renderSites(data.sites || []);
     renderResults(liveReport || data.last_test, !!liveReport);
@@ -308,13 +388,19 @@
   function renderSystem(state) {
     const checked = !!state.checked_at && !state.checked_at.startsWith("0001");
     const label = !checked ? "Проверяю" : !state.installed ? "Не найден" : state.command_ok ? "Статус получен" : "Установлен, ошибка команды статуса";
-    text("xkeenState", label);
-    text("xkeenTopStatus", "XKeen: " + (!checked ? "проверяю" : !state.installed ? "не найден" : state.command_ok ? "отвечает" : "установлен"));
-    $("xkeenTopStatus").className = "top-status" + (checked && state.command_ok ? " online" : checked && !state.installed ? " offline" : "");
+    text("xkeenState", state.xray_running === false ? "Xray остановлен" : label);
+    text("xkeenTopStatus", "XKeen: " + (!checked ? "проверяю" : !state.installed ? "не найден" : state.xray_running === false ? "Xray остановлен" : state.command_ok ? "команда доступна" : "ошибка статуса"));
+    $("xkeenTopStatus").className = "top-status" + (checked && state.xray_running === false ? " offline" : checked && !state.installed ? " offline" : "");
     text("xkeenChecked", checked ? "Проверено: " + dateLabel(state.checked_at) : "Проверка ещё не завершена");
     text("xkeenStatusText", (state.status || []).join("\n") || "Статус пока недоступен");
-    text("xkeenLogText", (state.detached_log || []).join("\n") || "Записей пока нет");
-    text("xrayLogText", (state.xray_error_log || []).join("\n") || "Записей пока нет");
+    text("xkeenLogText", (state.detached_log || []).join("\n") || "Фоновых команд start/stop нет.");
+    const logSettingsUnknown = state.xray_log_config_known === false;
+    const errorPathUnknown = logSettingsUnknown || state.xray_error_path_known === false;
+    const accessPathUnknown = logSettingsUnknown || state.xray_access_path_known === false;
+    text("xrayLogDetail", (errorPathUnknown ? "Путь не определён" : state.xray_error_path || "Файл отключён") + (state.xray_log_level ? " · уровень " + state.xray_log_level : " · уровень неизвестен"));
+    text("xrayLogText", (state.xray_error_log || []).join("\n") || (logSettingsUnknown ? "Не удалось прочитать настройки журнала Xray." : errorPathUnknown ? "Путь журнала ошибок в конфигурации Xray не распознан." : state.xray_log_level === "none" ? "Журнал ошибок отключён в конфигурации Xray: loglevel = none." : !state.xray_error_path ? "Запись в файл отключена в конфигурации Xray." : "Журнал ошибок пуст или не создан. Это не подтверждает исправность Xray."));
+    text("xrayAccessLogDetail", accessPathUnknown ? "Путь не определён" : state.xray_access_path || "Файл отключён");
+    text("xrayAccessLogText", (state.xray_access_log || []).join("\n") || (logSettingsUnknown ? "Не удалось прочитать настройки журнала Xray." : accessPathUnknown ? "Путь журнала доступа в конфигурации Xray не распознан." : !state.xray_access_path ? "Журнал доступа отключён в конфигурации Xray." : "Журнал доступа пуст или не создан."));
   }
   async function refreshSystem() {
     if (systemRefreshing) return;
@@ -324,6 +410,53 @@
       if (csrf) renderSystem(state);
     } catch (error) { showBanner("Статус XKeen", error.message, "failed"); }
     finally { systemRefreshing = false; }
+  }
+  function renderDNS(state) {
+    text("dnsConfigFile", state.config_file || "DNS-фрагмент не найден");
+    badge($("dnsBadge"), state.managed ? "DNS auto подготовлен" : "Ручная конфигурация", state.managed ? "good" : "neutral");
+    text("dnsServers", "Серверы: " + (state.servers?.length ? state.servers.join(", ") : "не указаны"));
+    text("dnsParallel", "Параллельные запросы: " + (state.parallel_queries ? "включены" : "выключены"));
+    text("dnsNote", state.note || (state.runtime_activation_unverified ? "Неизвестно, загрузил ли работающий Xray изменения. Требуется ручной перезапуск." : "Показано состояние файла Xray."));
+    $("dnsOnButton").disabled = !!state.managed;
+    $("dnsOffButton").disabled = !state.managed;
+  }
+  async function refreshDNS() {
+    if (dnsRefreshing) return;
+    dnsRefreshing = true;
+    try { renderDNS(await api("/api/dns")); }
+    catch (error) { showBanner("Состояние DNS", error.message, "failed"); }
+    finally { dnsRefreshing = false; }
+  }
+  function renderJobResult(job) {
+    const result = job.result;
+    if (!result) return;
+    let lines = [];
+    if (job.action === "dns-test" || job.action === "dns-on") {
+      const probes = Array.isArray(result) ? result : result.probes || [];
+      lines = probes.map(p => `${p.name}: ${p.success ? "доступен" : "ошибка"}${p.median_ms != null ? ` · ${Math.round(p.median_ms)} мс` : ""} · ${p.responses}/3 ответов${p.note ? ` · ${p.note}` : ""}`);
+      if (job.action === "dns-on" && result.config_file) lines.push("Записан файл: " + result.config_file);
+    } else if (job.action === "dns-verify") {
+      lines = ["Файл: " + (result.config_file || "—"), "Прямой маршрут: " + (result.direct?.success ? "DNS ответил" : result.direct?.reason || "нет ответа"), "Выбранный VLESS: " + (result.selected_vless?.success ? "DNS ответил" : result.selected_vless?.reason || "не проверен"), result.scope || ""];
+    } else if (job.action === "doctor-network") {
+      lines = (result.checks || []).map(c => `${c.ok ? "✓" : "!"} ${c.name}: ${c.detail}${c.action ? ` · ${c.action}` : ""}`);
+    } else if (job.action === "doctor") {
+      lines = Object.entries(result.checks || {}).map(([name, ok]) => `${ok ? "✓" : "!"} ${name}`);
+    } else if (job.action === "startup-check") {
+      const format = (title, check) => `${check?.ok ? "✓" : "!"} ${title}: ${(check?.lines || []).join(" · ") || "нет вывода"}`;
+      lines = [format("Xray -xtest", result.config_test), format("XKeen PBR", result.pbr_status), format("Entware proxy", result.proxy_status), `Метка генерируемых VLESS: ${result.outbound_mark || "не задана"}`];
+      if (!result.config_test?.ok) lines.push("Конфигурация Xray не прошла проверку.");
+      lines.push("Успех -xtest не проверяет strict PBR и не доказывает запуск Xray.");
+    } else if (job.action === "plan") {
+      lines = [`Поддерживаемых ключей: ${result.supported_nodes ?? 0}`, `Новых или изменённых: ${result.new_or_changed ?? 0}`, `Не-VLESS записей пропущено: ${result.ignored_non_vless ?? 0}`, `Конфигурация изменится: ${result.configuration_changed ? "да" : "нет"}`];
+    } else if (job.action === "keys-check") {
+      lines = (result.Keys || []).map(k => `${k.Active ? "●" : "○"} ${k.Name || k.Tag}: ${k.PingMS == null ? "нет ответа" : Math.round(k.PingMS) + " мс"}`);
+      if (result.APIWarning) lines.unshift(result.APIWarning);
+    }
+    if (lines.length) {
+      const id = job.action.startsWith("dns-") ? "dnsResult" : "systemResult";
+      text(id, lines.join("\n"));
+      $(id).hidden = false;
+    }
   }
   async function refreshUpdate() {
     try {
@@ -337,15 +470,25 @@
       text("updatePhase", state.pending_phase ? "Этап: " + state.pending_phase : "Нет текущей установки");
       $("updatePolicy").value = state.policy || "patch";
 	  $("enableUpdateButton").hidden = !!state.enabled;
-      $("installUpdateButton").disabled = !state.enabled || !state.verified || !state.available || !!state.pending_phase || state.state_invalid;
+      $("autoUpdateButton").disabled = !!state.enabled && state.mode === "auto";
+      $("pauseUpdateButton").disabled = !state.enabled;
+      text("updateAdvancedState", (!state.enabled ? "Обновления отключены" : state.paused ? "Установка приостановлена" : "Установка разрешена") + (state.pinned_version ? " · закреплена " + state.pinned_version : " · версия не закреплена"));
+      $("pauseInstallButton").disabled = !state.enabled || !!state.paused;
+      $("resumeInstallButton").disabled = !state.paused;
+      $("downloadUpdateButton").disabled = !state.enabled || state.state_invalid;
+      $("unpinUpdateButton").disabled = !state.pinned_version;
+      $("installUpdateButton").disabled = !state.enabled || !!state.paused || !state.verified || !state.available || !!state.pending_phase || state.state_invalid;
       $("checkUpdateButton").disabled = !state.enabled || state.state_invalid;
     } catch (error) { showBanner("Обновления", error.message, "failed"); }
   }
   async function startAction(action, tag = "") {
-    const names = { sync: "Синхронизация", "check-key": "Проверка ключа", "url-test": "URL Test", select: "Выбор ключа", pin: "Закрепление ключа", auto: "Автовыбор", "forget-emergency": "Аварийный ключ", "update-enable": "Включение обновлений", "update-check": "Проверка обновлений", "update-install": "Установка обновления" };
+    const names = { sync: "Синхронизация", "check-key": "Проверка ключа", "url-test": "URL Test", select: "Выбор ключа", pin: "Закрепление ключа", auto: "Автовыбор", "forget-emergency": "Аварийный ключ", "update-enable": "Включение обновлений", "update-check": "Проверка обновлений", "update-install": "Установка обновления", "update-auto": "Автоустановка обновлений", "update-disable": "Отключение обновлений", "update-pause-on": "Пауза установки", "update-pause-off": "Возобновление установки", "update-download": "Загрузка пакета", "update-retry": "Повторная попытка", "dns-test": "Проверка DoH", "dns-verify": "Проверка DNS-маршрутов", "dns-on": "Включение DNS auto", "dns-off": "Откат DNS auto", doctor: "Проверка готовности", "startup-check": "Проверка условий запуска XKeen", "doctor-network": "Диагностика сети", plan: "План подписки", "keys-check": "Проверка ключей", adopt: "Первое подключение", reconcile: "Согласование Xray", gc: "Очистка ключей", recover: "Завершение операции", abort: "Откат операции", "hold-on": "Пауза синхронизации", "hold-off": "Возобновление синхронизации", "url-migrate": "Перенос адреса подписки" };
     try {
       const job = await api("/api/action", { method: "POST", body: JSON.stringify({ action, tag }) });
       activeJob = job.id;
+      webJob = { action, state: "running", message: "Ожидает завершения" };
+      if (currentActivity) renderActivity(currentActivity);
+      refreshActivity();
       if (action === "url-test") { liveReport = null; location.hash = "#url-test"; navigate(); }
       showBanner(names[action] || "Операция", action === "update-install" ? "Установщик запущен. Панель может ненадолго перезапуститься." : "Выполняется…");
       await pollJob();
@@ -356,17 +499,24 @@
     try {
       const job = await api("/api/job");
       if (job.id !== activeJob) return;
-      if (job.state === "running") {
-        showBanner(job.action === "url-test" ? "URL Test" : "Операция выполняется", job.message);
+      if (["queued", "waiting", "running"].includes(job.state)) {
+        webJob = job;
+        if (currentActivity) renderActivity(currentActivity);
+        showBanner(job.action === "url-test" ? "URL Test" : job.state === "running" ? "Операция выполняется" : "Операция ожидает", job.message);
         if (job.action === "url-test" && job.report?.results?.length) { liveReport = job.report; renderResults(liveReport, true); }
         setTimeout(pollJob, 1200);
         return;
       }
       activeJob = 0;
+      webJob = null;
+      if (currentActivity) renderActivity(currentActivity);
       liveReport = null;
       showBanner(job.state === "succeeded" ? "Операция завершена" : "Операция не выполнена", job.message, job.state);
       if (job.report?.results?.length) renderResults(job.report);
+      renderJobResult(job);
       await refresh();
+      await refreshActivity();
+      if (activePage() === "dns" || job.action.startsWith("dns-")) await refreshDNS();
       if (activePage() === "updates") await refreshUpdate();
     } catch (error) { if (error.status === 401) return; showBanner("Проверка состояния", error.message, "failed"); setTimeout(pollJob, 2500); }
   }
@@ -378,6 +528,9 @@
       const job = await api("/api/emergency", { method: "POST", body: JSON.stringify({ uri }) });
       $("emergencyInput").value = "";
       activeJob = job.id;
+      webJob = { action: "emergency", state: "running", message: "Ожидает завершения" };
+      if (currentActivity) renderActivity(currentActivity);
+      refreshActivity();
       showBanner("Аварийный ключ", "Проверяю формат и конфигурацию Xray…");
       await pollJob();
     } catch (error) { showBanner("Аварийный ключ", error.message, "failed"); }
@@ -401,7 +554,33 @@
     } catch (error) {
       checkbox.checked = !enabled;
       showBanner("Режим проверки", error.message, "failed");
-    } finally { checkbox.disabled = false; }
+    } finally { checkbox.disabled = current?.live_probes_allowed !== true; }
+  }
+  async function pinUpdate(version) {
+    try {
+      await api("/api/update/pin", { method: "PUT", body: JSON.stringify({ version }) });
+      $("pinnedVersion").value = "";
+      showBanner("Версия обновления", version ? "Закреплена версия " + version : "Ограничение версии снято", "succeeded");
+      await refreshUpdate();
+    } catch (error) { showBanner("Версия обновления", error.message, "failed"); }
+  }
+  async function saveSubscriptionURL() {
+    const input = $("subscriptionURL");
+    if (!input.value.trim()) { showBanner("Адрес подписки", "Введите HTTPS URL подписки.", "failed"); return; }
+    try {
+      await api("/api/subscription-url", { method: "PUT", body: JSON.stringify({ url: input.value.trim() }) });
+      input.value = "";
+      showBanner("Адрес подписки", "Сохранён. Следующая синхронизация использует новый адрес.", "succeeded");
+    } catch (error) { showBanner("Адрес подписки", error.message, "failed"); }
+  }
+  async function changeToken() {
+    try {
+      await api("/api/token", { method: "PUT", body: JSON.stringify({ current: $("currentToken").value, new: $("newToken").value }) });
+      $("currentToken").value = "";
+      $("newToken").value = "";
+      csrf = "";
+      showLogin("Токен изменён. Войдите с новым токеном.");
+    } catch (error) { showBanner("Токен WebUI", error.message, "failed"); }
   }
 
   $("loginForm").addEventListener("submit", async (event) => {
@@ -425,7 +604,17 @@
   $("autoButton").addEventListener("click", () => startAction("auto"));
   $("emergencyButton").addEventListener("click", startEmergency);
   $("forgetEmergencyButton").addEventListener("click", () => startAction("forget-emergency"));
-  $("refreshSystemButton").addEventListener("click", refreshSystem);
+  $("refreshSystemButton").addEventListener("click", () => { refreshSystem(); refreshActivity(); });
+  $("stopActivityButton").addEventListener("click", () => controlActivity("/api/activity/stop", "Пауза фоновых задач"));
+  $("resumeActivityButton").addEventListener("click", () => controlActivity("/api/activity/resume", "Возобновление фоновых задач"));
+	$("refreshDNSButton").addEventListener("click", refreshDNS);
+for (const [id, action] of Object.entries({ dnsOnButton: "dns-on", dnsOffButton: "dns-off", dnsTestButton: "dns-test", dnsVerifyButton: "dns-verify", doctorButton: "doctor", startupCheckButton: "startup-check", doctorNetworkButton: "doctor-network", planButton: "plan", keysCheckButton: "keys-check", adoptButton: "adopt", reconcileButton: "reconcile", gcButton: "gc", recoverButton: "recover", abortButton: "abort", holdOnButton: "hold-on", holdOffButton: "hold-off", migrateSubscriptionButton: "url-migrate", autoUpdateButton: "update-auto", pauseUpdateButton: "update-disable", pauseInstallButton: "update-pause-on", resumeInstallButton: "update-pause-off", downloadUpdateButton: "update-download", retryUpdateButton: "update-retry" })) {
+	  $(id).addEventListener("click", () => startAction(action));
+	}
+	$("pinUpdateButton").addEventListener("click", () => { const version = $("pinnedVersion").value.trim(); if (version) pinUpdate(version); else showBanner("Версия обновления", "Введите номер версии.", "failed"); });
+	$("unpinUpdateButton").addEventListener("click", () => pinUpdate(""));
+	$("saveSubscriptionButton").addEventListener("click", saveSubscriptionURL);
+	$("changeTokenButton").addEventListener("click", changeToken);
 	$("enableUpdateButton").addEventListener("click", () => startAction("update-enable"));
   $("checkUpdateButton").addEventListener("click", () => startAction("update-check"));
   $("installUpdateButton").addEventListener("click", () => startAction("update-install"));
@@ -444,11 +633,12 @@
         showApp();
         await refresh();
         const job = await api("/api/job");
-        if (job.state === "running") { activeJob = job.id; showBanner("Операция выполняется", job.message); pollJob(); }
+        if (["queued", "waiting", "running"].includes(job.state)) { activeJob = job.id; webJob = job; if (currentActivity) renderActivity(currentActivity); showBanner("Операция выполняется", job.message); pollJob(); }
+        else renderJobResult(job);
       } else showLogin();
     } catch (error) { showLogin(error.message); }
   })();
   // These endpoints read cached health. Editing sites or running a job must not
   // freeze the global indicators; renderSites already preserves unsaved input.
-  setInterval(() => { if (csrf && !document.hidden) { refresh(); if (activePage() === "updates" && !activeJob) refreshUpdate(); } }, 5000);
+  setInterval(() => { if (csrf && !document.hidden) { refresh(); refreshActivity(); if (activePage() === "updates" && !activeJob) refreshUpdate(); } }, 5000);
 })();

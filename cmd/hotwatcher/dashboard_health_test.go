@@ -115,6 +115,9 @@ func TestXrayProcessDetectionExcludesCommandsAndProbes(t *testing.T) {
 		{"/opt/sbin/xray\x00run\x00-test=true", false},
 		{"/opt/sbin/xray\x00run\x00-config\x00/opt/var/lib/hotwatcher/probe-123/probe.json", false},
 		{"/opt/sbin/xray\x00run\x00-config=/opt/var/lib/hotwatcher/url-test-123/config.json", false},
+		{"/opt/sbin/xray\x00run\x00-config\x00/tmp/isolated-xray.json", false},
+		{"/opt/sbin/xray\x00run\x00-confdir\x00/tmp/isolated-xray", false},
+		{"/opt/sbin/xray\x00run\x00-confdir=/opt/etc/xray/configs-other", false},
 		{"/bin/sh\x00/opt/sbin/xray", false},
 	} {
 		t.Run(strings.ReplaceAll(tc.command, "\x00", " "), func(t *testing.T) {
@@ -125,13 +128,13 @@ func TestXrayProcessDetectionExcludesCommandsAndProbes(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(proc, "123", "cmdline"), []byte(tc.command+"\x00"), 0600); err != nil {
 				t.Fatal(err)
 			}
-			got := xrayProcessRunning(proc, "/opt/sbin/xray", "/opt/var/lib/hotwatcher")
+			got := xrayProcessRunning(proc, "/opt/sbin/xray", "/opt/etc/xray/configs", "/opt/var/lib/hotwatcher")
 			if got == nil || *got != tc.want {
 				t.Fatalf("running=%v, want %v", got, tc.want)
 			}
 		})
 	}
-	if got := xrayProcessRunning(filepath.Join(t.TempDir(), "missing"), "/opt/sbin/xray", ""); got != nil {
+	if got := xrayProcessRunning(filepath.Join(t.TempDir(), "missing"), "/opt/sbin/xray", "/opt/etc/xray/configs", ""); got != nil {
 		t.Fatal("missing /proc was treated as a stopped service")
 	}
 }
@@ -150,5 +153,15 @@ func TestXKeenStatusAcceptsExecutableSymlinkAndEntwarePATH(t *testing.T) {
 	status := readXKeenStatusCommand(context.Background(), command)
 	if !status.Installed || !status.CommandOK || len(status.Status) != 1 {
 		t.Fatalf("%+v", status)
+	}
+}
+
+func TestReadXrayLogLevelExplainsEmptyJournal(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "01_log.json"), []byte(`{"log":{"error":"/opt/var/log/xray/error.log","loglevel":"none"}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if got := readXrayLogLevel(dir); got != "none" {
+		t.Fatalf("log level = %q, want none", got)
 	}
 }

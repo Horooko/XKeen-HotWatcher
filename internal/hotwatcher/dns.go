@@ -146,6 +146,16 @@ func jsoncToJSON(src []byte) ([]byte, error) {
 	return out, nil
 }
 
+// DecodeXrayJSONC decodes the comments and trailing commas accepted in Xray
+// configuration fragments. Callers still validate the resulting object.
+func DecodeXrayJSONC(src []byte, target any) error {
+	clean, err := jsoncToJSON(src)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(clean, target)
+}
+
 func parseDNSFragment(b []byte) (map[string]json.RawMessage, error) {
 	clean, err := jsoncToJSON(b)
 	if err != nil {

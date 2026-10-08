@@ -29,6 +29,7 @@ func (e *Engine) DoctorNetwork() NetworkDoctorReport {
 
 func (e *Engine) DoctorNetworkWithProgress(progress func(NetworkCheck)) NetworkDoctorReport {
 	report := NetworkDoctorReport{Version: Version, Healthy: true, Checks: []NetworkCheck{}}
+	diagnostic := e.isolatedChecks()
 	add := func(name string, ok bool, detail, action string, critical bool) {
 		check := NetworkCheck{Name: name, OK: ok, Detail: detail, Action: action}
 		report.Checks = append(report.Checks, check)
@@ -59,8 +60,10 @@ func (e *Engine) DoctorNetworkWithProgress(progress func(NetworkCheck)) NetworkD
 	}
 	if lock, err := CurrentLock(e.C); err != nil {
 		add("operation_lock", false, "не удалось прочитать блокировку", "проверьте права state_dir", false)
+	} else if lock.Busy && lock.PID == os.Getpid() && (lock.Operation == "doctor network" || lock.Operation == "web doctor-network") {
+		add("operation_lock", true, "Замок удерживает эта диагностика; параллельная проверка не запущена", "", false)
 	} else if lock.Busy {
-		add("operation_lock", false, "выполняется "+lock.Operation, "hotwatcher recovery status покажет этап и PID", false)
+		add("operation_lock", false, "выполняется "+lock.Operation, "hotwatcher activity status покажет этап и PID", false)
 	} else {
 		add("operation_lock", true, "операция Hot Watcher не занята", "", false)
 	}
@@ -79,10 +82,10 @@ func (e *Engine) DoctorNetworkWithProgress(progress func(NetworkCheck)) NetworkD
 		add("active_key", false, "ключи ещё не приняты Hot Watcher", "выполните hotwatcher adopt", true)
 	} else if node, found := findNode(s.Active, s.Selected); !found {
 		add("active_key", false, "выбранный ключ отсутствует в сохранённом списке", "hotwatcher recovery status", true)
-	} else if latency, err := e.R.ProbeLatency(node); err != nil {
-		add("active_key", false, "HTTPS-проба через выбранный ключ не удалась", "hotwatcher keys --check или hard-sync вне игры", true)
+	} else if latency, err := diagnostic.R.ProbeLatency(node); err != nil {
+		add("selected_key_https_probe", false, "Отдельная HTTPS-проба не получила ожидаемый ответ; это не доказывает неисправность ключа", "проверьте конкретный сайт и маршрут, когда это будет удобно", false)
 	} else {
-		add("active_key", true, "HTTPS-проба через ключ: "+strconv.Itoa(int(latency/time.Millisecond))+" мс", "", true)
+		add("selected_key_https_probe", true, "Изолированная HTTPS-проба через ключ: "+strconv.Itoa(int(latency/time.Millisecond))+" мс", "", true)
 	}
 	if dns, err := e.DNSVerify(); err != nil {
 		add("dns_xray", false, "DNS-проба не подготовлена", "проверьте hotwatcher dns status", false)

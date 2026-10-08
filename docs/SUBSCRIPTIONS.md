@@ -48,6 +48,14 @@ obfuscation, custom certificates, `packetEncoding`, VLESS Encryption и новы
 могут быть нужны серверу. Нужен поддерживаемый профиль или расширение конвертера с тестами.
 
 В сгенерированном Xray JSON используются проверяемые `vnext/users` и `streamSettings`.
+Поле `outbound_mark` в `/opt/etc/hotwatcher/config.json` (по умолчанию `0`)
+добавляет `streamSettings.sockopt.mark` ко всем генерируемым VLESS outbounds.
+Если включён XKeen `-pbr on`, укажите код реальной политики из `xkeen -pbr codes`;
+для обычного Entware proxy (`xkeen -pr on`) без PBR используется `255`.
+Это разные режимы: не подставляйте `255` вместо кода PBR. После изменения
+проверьте `xkeen -xtest`; значение также должно быть согласовано с остальными
+реальными outbounds, включая `direct`. Новое значение попадёт в файл при
+следующей успешной синхронизации HotWatcher.
 Совместимость фактической сборки проверяется её собственным `xray run -test` и затем
 пробой кандидата; принятие JSON само по себе не доказывает UDP-совместимость.
 

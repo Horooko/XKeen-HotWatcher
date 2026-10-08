@@ -234,6 +234,9 @@ func parseVLESS(s string, c Config) (Node, error) {
 		fp = "chrome"
 	}
 	ss := map[string]any{"network": network, "security": security}
+	if c.OutboundMark != 0 {
+		ss["sockopt"] = map[string]any{"mark": c.OutboundMark}
+	}
 	if security == "reality" {
 		pbk, e := base64.RawURLEncoding.DecodeString(q.Get("pbk"))
 		if e != nil || len(pbk) != 32 {
