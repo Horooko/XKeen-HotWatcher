@@ -1,4 +1,4 @@
-# XKeen Hot Watcher 0.3.5
+# XKeen Hot Watcher 0.3.7
 
 Обновление VLESS-подписки в **работающем Xray без `xkeen -restart`**.
 Проект подготовлен для существующей схемы XKeen 2.x / Entware / Linux aarch64:

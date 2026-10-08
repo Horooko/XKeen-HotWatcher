@@ -78,7 +78,7 @@ test('real Go JSON casing renders names, opaque tags, verification and actions',
 test('status report is generated only on demand, rendered and downloadable', async () => {
   const a = await app();
   assert.equal(a.calls.some(call => call.url === '/api/diagnostics/report'), false);
-  const report = { generated_at: '2026-10-08T08:00:00Z', sections: [{ title: 'Процессы и версии', lines: ['Xray: 1 процесс', 'Hot Watcher: 0.3.5'] }, { title: 'Активный ключ', lines: ['Проверка: 78 мс'] }], text: 'Hot Watcher\nXray: 1 процесс\n' };
+  const report = { generated_at: '2026-10-08T08:00:00Z', sections: [{ title: 'Процессы и версии', lines: ['Xray: 1 процесс', 'Hot Watcher: 0.3.7'] }, { title: 'Активный ключ', lines: ['Проверка: 78 мс'] }], text: 'Hot Watcher\nXray: 1 процесс\n' };
   a.context.fetch = async (url) => { a.calls.push({ url }); return { ok: true, json: async () => report }; };
   a.setSession();
   await a.elements.get('generateStatusReportButton').listeners.click();
