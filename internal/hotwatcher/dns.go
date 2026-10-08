@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -16,19 +17,25 @@ import (
 // DNS auto mode affects only Xray's built-in DNS module. XKeen/Keenetic DNS
 // policy is deliberately outside this file's ownership.
 type DNSStatus struct {
-	ConfigFile                  string   `json:"config_file"`
-	Managed                     bool     `json:"managed"`
-	ParallelQueries             bool     `json:"parallel_queries"`
-	Servers                     []string `json:"servers"`
-	RuntimeActivationUnverified bool     `json:"runtime_activation_unverified"`
-	Note                        string   `json:"note,omitempty"`
+	ConfigFile                  string        `json:"config_file"`
+	Managed                     bool          `json:"managed"`
+	ParallelQueries             bool          `json:"parallel_queries"`
+	Servers                     []string      `json:"servers"`
+	RuntimeActivationUnverified bool          `json:"runtime_activation_unverified"`
+	Note                        string        `json:"note,omitempty"`
+	Providers                   []DNSProvider `json:"providers"`
+	SelectedProviderIDs         []string      `json:"selected_provider_ids"`
+	AppliedProviderIDs          []string      `json:"applied_provider_ids"`
+	AutoSelectionEnabled        bool          `json:"auto_selection_enabled"`
+	GeneratedConfigFile         string        `json:"generated_config_file"`
 }
 
 type DNSChange struct {
-	ConfigFile string           `json:"config_file"`
-	Servers    []string         `json:"servers"`
-	Probes     []DNSProbeResult `json:"probes"`
-	Restart    string           `json:"restart"`
+	ConfigFile        string           `json:"config_file"`
+	Servers           []string         `json:"servers"`
+	Probes            []DNSProbeResult `json:"probes"`
+	Restart           string           `json:"restart"`
+	SelectedProviders []string         `json:"selected_providers"`
 }
 
 type dnsSource struct {
@@ -40,13 +47,14 @@ type dnsSource struct {
 }
 
 type dnsJournal struct {
-	Schema       int       `json:"schema"`
-	Path         string    `json:"path"`
-	Original     []byte    `json:"original"`
-	OriginalHash string    `json:"original_hash"`
-	AppliedHash  string    `json:"applied_hash"`
-	Created      bool      `json:"created"`
-	At           time.Time `json:"at"`
+	Schema              int       `json:"schema"`
+	Path                string    `json:"path"`
+	Original            []byte    `json:"original"`
+	OriginalHash        string    `json:"original_hash"`
+	AppliedHash         string    `json:"applied_hash"`
+	PreviousAppliedHash string    `json:"previous_applied_hash,omitempty"`
+	Created             bool      `json:"created"`
+	At                  time.Time `json:"at"`
 }
 
 func dnsSourceUnchanged(src dnsSource) error {
@@ -280,6 +288,15 @@ func (e *Engine) DNSStatus() (DNSStatus, error) {
 		return DNSStatus{}, err
 	}
 	status := DNSStatus{ConfigFile: src.path, Servers: []string{}}
+	status.GeneratedConfigFile = src.path
+	status.AutoSelectionEnabled, err = e.DNSAutoSelectionEnabled()
+	if err != nil {
+		return status, err
+	}
+	status.Providers, status.SelectedProviderIDs, err = e.DNSProviderCatalog()
+	if err != nil {
+		return status, err
+	}
 	if raw := src.dns["enableParallelQuery"]; len(raw) != 0 {
 		_ = json.Unmarshal(raw, &status.ParallelQueries)
 	}
@@ -299,7 +316,9 @@ func (e *Engine) DNSStatus() (DNSStatus, error) {
 		status.Managed = journal.Schema == 1 && journal.Path == src.path
 		if status.Managed {
 			current, readErr := readLimited(src.path, 8*1024*1024)
-			if readErr != nil || digest(current) != journal.AppliedHash {
+			if readErr == nil && journal.PreviousAppliedHash != "" && (digest(current) == journal.PreviousAppliedHash || digest(current) == journal.AppliedHash) {
+				status.Note = "Переприменение DNS было прервано; файл содержит прежнюю или новую проверенную конфигурацию. Для восстановления выполните DNS auto off, затем DNS auto on."
+			} else if readErr != nil || digest(current) != journal.AppliedHash {
 				status.Note = "DNS-файл изменился после включения; автоматический откат требует проверки"
 			}
 			status.RuntimeActivationUnverified = true // Live DNS state is not exposed by Xray API.
@@ -310,7 +329,18 @@ func (e *Engine) DNSStatus() (DNSStatus, error) {
 		return status, errors.New("повреждён файл резервной копии DNS")
 	}
 	if src.created && status.Note == "" {
-		status.Note = "DNS-фрагмент Xray отсутствует; текущий Xray использует системный DNS"
+		status.Note = "В 02_dns.json нет объекта dns; при включении Hot Watcher создаст отдельный 02_hotwatcher_dns.json. Работающий Xray загрузит его после xkeen -restart."
+	}
+	if status.Managed {
+		for _, server := range status.Servers {
+			for _, candidate := range dnsCandidates {
+				endpoint, _ := url.Parse(candidate.URL)
+				endpoint.Scheme = "https+local"
+				if endpoint.String() == server {
+					status.AppliedProviderIDs = append(status.AppliedProviderIDs, candidate.ID)
+				}
+			}
+		}
 	}
 	return status, nil
 }
@@ -458,12 +488,35 @@ func validateDNSStaged(c Config, target string, candidate []byte) error {
 }
 
 func (e *Engine) DNSAutoOn() (DNSChange, error) {
+	ids, err := e.DNSSelectedProviderIDs()
+	if err != nil {
+		return DNSChange{}, err
+	}
+	auto, err := e.DNSAutoSelectionEnabled()
+	if err != nil {
+		return DNSChange{}, err
+	}
+	return e.DNSAutoOnWithSelection(ids, auto)
+}
+
+func (e *Engine) DNSAutoOnSelected(ids []string) (DNSChange, error) {
+	return e.DNSAutoOnWithSelection(ids, true)
+}
+
+func (e *Engine) DNSAutoOnWithSelection(ids []string, autoSelect bool) (DNSChange, error) {
 	var result DNSChange
+	candidates, err := dnsCandidatesForIDs(ids)
+	if err != nil {
+		return result, err
+	}
+	if len(candidates) < 2 {
+		return result, errors.New("для DNS auto выберите не менее двух провайдеров")
+	}
 	if err := privateDir(e.C.StateDir); err != nil {
 		return result, err
 	}
 	if _, err := os.Lstat(e.dnsJournalPath()); err == nil {
-		return result, errors.New("DNS auto уже подготовлен; проверьте dns status или выполните dns auto off")
+		return e.dnsAutoReconfigure(candidates, autoSelect)
 	} else if !os.IsNotExist(err) {
 		return result, err
 	}
@@ -482,22 +535,15 @@ func (e *Engine) DNSAutoOn() (DNSChange, error) {
 	} else if routed {
 		return result, errors.New("DNS tag направлен через routing; прямой DoH изменил бы DNS-over-VLESS, конфигурация не изменена")
 	}
-	if _, _, err := prepareDNS(src, dnsCandidates); err != nil {
+	if _, _, err := prepareDNS(src, candidates); err != nil {
 		return result, err
 	}
-	probes, err := e.DNSTest()
+	probes, err := e.DNSTestSelected(ids)
 	if err != nil {
 		return result, err
 	}
 	result.Probes = probes
-	available := []dnsCandidate{}
-	for _, candidate := range dnsCandidates {
-		for _, probe := range probes {
-			if candidate.Name == probe.Name && probe.Success {
-				available = append(available, candidate)
-			}
-		}
-	}
+	available := selectedDNSCandidates(candidates, probes, autoSelect)
 	prepared, servers, err := prepareDNS(src, available)
 	if err != nil {
 		return result, err
@@ -543,6 +589,158 @@ func (e *Engine) DNSAutoOn() (DNSChange, error) {
 		return result, fmt.Errorf("DNS-файл не подтверждён; проверьте dns status, резервная копия сохранена при неопределённом состоянии: %w", err)
 	}
 	result.ConfigFile, result.Servers = src.path, servers
+	for _, candidate := range available {
+		result.SelectedProviders = append(result.SelectedProviders, candidate.ID)
+	}
+	result.Restart = "Проверка: xkeen -xtest; затем вне игры: xkeen -restart"
+	return result, nil
+}
+
+func fastestDNSCandidates(candidates []dnsCandidate, probes []DNSProbeResult, limit int) []dnsCandidate {
+	latency := make(map[string]float64, len(probes))
+	for _, probe := range probes {
+		if probe.Success && probe.MedianMS != nil {
+			latency[probe.ID] = *probe.MedianMS
+		}
+	}
+	available := make([]dnsCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		if _, ok := latency[candidate.ID]; ok {
+			available = append(available, candidate)
+		}
+	}
+	sort.SliceStable(available, func(i, j int) bool { return latency[available[i].ID] < latency[available[j].ID] })
+	if len(available) > limit {
+		available = available[:limit]
+	}
+	return available
+}
+
+func selectedDNSCandidates(candidates []dnsCandidate, probes []DNSProbeResult, autoSelect bool) []dnsCandidate {
+	if autoSelect {
+		return fastestDNSCandidates(candidates, probes, 3)
+	}
+	successful := map[string]bool{}
+	for _, probe := range probes {
+		if probe.Success {
+			successful[probe.ID] = true
+		}
+	}
+	available := make([]dnsCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		if successful[candidate.ID] {
+			available = append(available, candidate)
+		}
+	}
+	return available
+}
+
+// Reconfiguration keeps the original, byte-exact backup. A two-hash journal
+// makes either on-disk version recoverable if the process dies between the
+// atomic journal and DNS-file replacements.
+func (e *Engine) dnsAutoReconfigure(candidates []dnsCandidate, autoSelect bool) (DNSChange, error) {
+	var result DNSChange
+	var journal dnsJournal
+	if err := mustJSON(e.dnsJournalPath(), &journal); err != nil {
+		return result, err
+	}
+	if journal.Schema != 1 || filepath.Dir(journal.Path) != filepath.Clean(e.C.ConfigDir) || !strings.HasSuffix(filepath.Base(journal.Path), ".json") || journal.OriginalHash != digest(journal.Original) {
+		return result, errors.New("резервная копия DNS повреждена; переприменение остановлено")
+	}
+	current, err := readLimited(journal.Path, 8*1024*1024)
+	if err != nil {
+		return result, err
+	}
+	if digest(current) != journal.AppliedHash && (journal.PreviousAppliedHash == "" || digest(current) != journal.PreviousAppliedHash) {
+		return result, errors.New("DNS-файл изменён вне Hot Watcher; переприменение остановлено")
+	}
+	if journal.PreviousAppliedHash != "" {
+		return result, errors.New("предыдущее переприменение DNS не завершено; сначала проверьте dns status или выполните dns auto off")
+	}
+	src := dnsSource{path: journal.Path, original: journal.Original, created: journal.Created, root: map[string]json.RawMessage{}, dns: map[string]json.RawMessage{}}
+	if !journal.Created {
+		root, err := parseDNSFragment(journal.Original)
+		if err != nil {
+			return result, err
+		}
+		dns := map[string]json.RawMessage{}
+		if err := json.Unmarshal(root["dns"], &dns); err != nil || dns == nil {
+			return result, errors.New("исходная DNS-конфигурация повреждена")
+		}
+		src.root, src.dns = root, dns
+	}
+	var tag string
+	if raw := src.dns["tag"]; len(raw) != 0 {
+		if err := json.Unmarshal(raw, &tag); err != nil {
+			return result, errors.New("неверный исходный DNS tag")
+		}
+	}
+	if routed, err := dnsTagRouted(e.C, tag); err != nil {
+		return result, err
+	} else if routed {
+		return result, errors.New("DNS tag направлен через routing; переприменение остановлено")
+	}
+	if _, _, err := prepareDNS(src, candidates); err != nil {
+		return result, err
+	}
+	ids := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		ids = append(ids, candidate.ID)
+	}
+	probes, err := e.DNSTestSelected(ids)
+	if err != nil {
+		return result, err
+	}
+	result.Probes = probes
+	available := selectedDNSCandidates(candidates, probes, autoSelect)
+	prepared, servers, err := prepareDNS(src, available)
+	if err != nil {
+		return result, err
+	}
+	if err := validateDNSStaged(e.C, src.path, prepared); err != nil {
+		return result, err
+	}
+	preparedRoot, err := parseDNSFragment(prepared)
+	if err != nil {
+		return result, err
+	}
+	var preparedDNS map[string]json.RawMessage
+	if err := json.Unmarshal(preparedRoot["dns"], &preparedDNS); err != nil {
+		return result, err
+	}
+	direct := map[string]any{"tag": "hw-dns-direct", "protocol": "freedom", "settings": map[string]any{}}
+	if _, err := e.probeDNSRoute(preparedDNS, direct); err != nil {
+		return result, fmt.Errorf("новый DNS не ответил в изолированном Xray; прежняя конфигурация сохранена: %w", err)
+	}
+	if now, err := readLimited(journal.Path, 8*1024*1024); err != nil || digest(now) != journal.AppliedHash {
+		return result, errors.New("DNS-файл изменился во время проверки; переприменение остановлено")
+	}
+	previous := journal
+	journal.PreviousAppliedHash = journal.AppliedHash
+	journal.AppliedHash = digest(prepared)
+	journal.At = e.Now().UTC()
+	if err := atomicWrite(e.dnsJournalPath(), encode(journal), 0600); err != nil {
+		return result, err
+	}
+	if now, err := readLimited(journal.Path, 8*1024*1024); err != nil || digest(now) != previous.AppliedHash {
+		_ = atomicWrite(e.dnsJournalPath(), encode(previous), 0600)
+		return result, errors.New("DNS-файл изменился перед записью; переприменение остановлено")
+	}
+	if err := atomicWrite(journal.Path, prepared, 0600); err != nil {
+		// The transition journal is retained unless the old file is confirmed.
+		if now, readErr := readLimited(journal.Path, 8*1024*1024); readErr == nil && digest(now) == previous.AppliedHash {
+			_ = atomicWrite(e.dnsJournalPath(), encode(previous), 0600)
+		}
+		return result, fmt.Errorf("DNS-файл не подтверждён; резервная копия сохранена: %w", err)
+	}
+	journal.PreviousAppliedHash = ""
+	if err := atomicWrite(e.dnsJournalPath(), encode(journal), 0600); err != nil {
+		return result, fmt.Errorf("DNS записан; завершить журнал не удалось, прежняя и новая версии подходят для dns auto off: %w", err)
+	}
+	result.ConfigFile, result.Servers = src.path, servers
+	for _, candidate := range available {
+		result.SelectedProviders = append(result.SelectedProviders, candidate.ID)
+	}
 	result.Restart = "Проверка: xkeen -xtest; затем вне игры: xkeen -restart"
 	return result, nil
 }
@@ -561,7 +759,7 @@ func (e *Engine) DNSAutoOff() error {
 	} else if err != nil {
 		return err
 	}
-	if digest(current) != journal.AppliedHash && digest(current) != journal.OriginalHash {
+	if digest(current) != journal.AppliedHash && digest(current) != journal.PreviousAppliedHash && digest(current) != journal.OriginalHash {
 		return errors.New("DNS-файл изменён после включения; автоматическое восстановление остановлено")
 	}
 	if journal.Created {

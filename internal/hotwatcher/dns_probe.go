@@ -18,23 +18,32 @@ import (
 )
 
 type dnsCandidate struct {
+	ID          string
 	Name        string
 	URL         string
 	Hostname    string
 	BootstrapIP string
+	Default     bool
 }
 
-// Only explicitly trusted providers are candidates. No system, DHCP, local,
-// plaintext or Yandex resolver enters automatic selection.
+// Only built-in provider endpoints are candidates. No system, DHCP, local or
+// plaintext resolver enters selection. Yandex is available only by opt-in.
 var dnsCandidates = []dnsCandidate{
-	{Name: "Cloudflare", URL: "https://1.1.1.1/dns-query", Hostname: "1.1.1.1", BootstrapIP: "1.1.1.1"},
+	{ID: "cloudflare", Name: "Cloudflare", URL: "https://1.1.1.1/dns-query", Hostname: "1.1.1.1", BootstrapIP: "1.1.1.1", Default: true},
 	// Local-mode DoH resolves a hostname through the OS, not dns.hosts. On a
 	// transparent-proxy router this can feed back into Xray after takeover.
 	// Google's IP endpoint serves RFC 8484 with a certificate valid for the IP.
-	{Name: "Google", URL: "https://8.8.8.8/dns-query", Hostname: "8.8.8.8", BootstrapIP: "8.8.8.8"},
+	{ID: "google", Name: "Google", URL: "https://8.8.8.8/dns-query", Hostname: "8.8.8.8", BootstrapIP: "8.8.8.8", Default: true},
+	{ID: "alidns", Name: "AliDNS", URL: "https://223.5.5.5/dns-query", Hostname: "223.5.5.5", BootstrapIP: "223.5.5.5", Default: true},
+	{ID: "dnspod", Name: "DNSPod", URL: "https://1.12.12.12/dns-query", Hostname: "1.12.12.12", BootstrapIP: "1.12.12.12", Default: true},
+	{ID: "opendns", Name: "OpenDNS", URL: "https://208.67.222.222/dns-query", Hostname: "208.67.222.222", BootstrapIP: "208.67.222.222", Default: true},
+	{ID: "adguard", Name: "AdGuard", URL: "https://94.140.14.14/dns-query", Hostname: "94.140.14.14", BootstrapIP: "94.140.14.14", Default: true},
+	{ID: "quad9", Name: "Quad9", URL: "https://9.9.9.9/dns-query", Hostname: "9.9.9.9", BootstrapIP: "9.9.9.9", Default: true},
+	{ID: "yandex", Name: "Yandex", URL: "https://77.88.8.8/dns-query", Hostname: "77.88.8.8", BootstrapIP: "77.88.8.8"},
 }
 
 type DNSProbeResult struct {
+	ID        string   `json:"id"`
 	Name      string   `json:"name"`
 	URL       string   `json:"url"`
 	Success   bool     `json:"success"`
@@ -174,13 +183,25 @@ func probeDoH(c Config, candidate dnsCandidate) (time.Duration, error) {
 }
 
 func (e *Engine) DNSTest() ([]DNSProbeResult, error) {
-	results := make([]DNSProbeResult, len(dnsCandidates))
+	ids, err := e.DNSSelectedProviderIDs()
+	if err != nil {
+		return nil, err
+	}
+	return e.DNSTestSelected(ids)
+}
+
+func (e *Engine) DNSTestSelected(ids []string) ([]DNSProbeResult, error) {
+	candidates, err := dnsCandidatesForIDs(ids)
+	if err != nil {
+		return nil, err
+	}
+	results := make([]DNSProbeResult, len(candidates))
 	var wg sync.WaitGroup
-	for i, candidate := range dnsCandidates {
+	for i, candidate := range candidates {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			result := DNSProbeResult{Name: candidate.Name, URL: candidate.URL}
+			result := DNSProbeResult{ID: candidate.ID, Name: candidate.Name, URL: candidate.URL}
 			latencies := []time.Duration{}
 			for n := 0; n < 3; n++ {
 				if latency, err := probeDoH(e.C, candidate); err == nil {

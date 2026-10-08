@@ -47,6 +47,33 @@ type startupCheckResult struct {
 	OutboundMark int                  `json:"outbound_mark"`
 }
 
+var entwareProxyAssignment = regexp.MustCompile(`(?m)^[ \t]*proxy_router[ \t]*=[ \t]*["']?(on|off)["']?[ \t]*(?:#.*)?$`)
+
+// XKeen -pr is interactive unless its argument is on or off. Read the
+// installed init script instead of invoking that menu from a status request.
+func readXKeenEntwareProxyMode() startupCommandResult {
+	return readXKeenEntwareProxyModeAt("/opt/etc/init.d/S05xkeen")
+}
+
+func readXKeenEntwareProxyModeAt(initScript string) startupCommandResult {
+	info, err := os.Lstat(initScript)
+	if err != nil || !info.Mode().IsRegular() || info.Size() > 1024*1024 {
+		return startupCommandResult{Lines: []string{"Режим проксирования Entware не определён: init-скрипт недоступен"}}
+	}
+	b, err := os.ReadFile(initScript)
+	if err != nil {
+		return startupCommandResult{Lines: []string{"Режим проксирования Entware не определён: init-скрипт не читается"}}
+	}
+	matches := entwareProxyAssignment.FindAllSubmatch(b, -1)
+	if len(matches) == 0 {
+		return startupCommandResult{Lines: []string{"Режим проксирования Entware не определён: proxy_router не найден"}}
+	}
+	if string(matches[len(matches)-1][1]) == "on" {
+		return startupCommandResult{OK: true, Lines: []string{"Проксирование трафика Entware: включено (proxy_router=on)"}}
+	}
+	return startupCommandResult{OK: true, Lines: []string{"Проксирование трафика Entware: отключено (proxy_router=off)"}}
+}
+
 // These fixed XKeen commands inspect startup prerequisites without changing the
 // router. -xtest checks Xray syntax; XKeen's strict PBR runs separately at start.
 func readStartupCommand(parent context.Context, command string, args ...string) startupCommandResult {
@@ -78,7 +105,7 @@ func checkXKeenStartup(parent context.Context, outboundMark int) startupCheckRes
 	return startupCheckResult{
 		ConfigTest:   readStartupCommand(parent, xkeenCommand, "-xtest"),
 		PBRStatus:    readStartupCommand(parent, xkeenCommand, "-pbr", "status"),
-		ProxyStatus:  readStartupCommand(parent, xkeenCommand, "-pr", "status"),
+		ProxyStatus:  readXKeenEntwareProxyMode(),
 		OutboundMark: outboundMark,
 	}
 }
@@ -87,7 +114,7 @@ func startupCheckError(result startupCheckResult) error {
 	if !result.ConfigTest.OK {
 		return errors.New("xkeen -xtest не прошёл; конфигурация Xray требует проверки")
 	}
-	if !result.PBRStatus.OK || !result.ProxyStatus.OK {
+	if !result.PBRStatus.OK {
 		return errors.New("не все проверки условий запуска XKeen завершились успешно; см. детали")
 	}
 	return nil

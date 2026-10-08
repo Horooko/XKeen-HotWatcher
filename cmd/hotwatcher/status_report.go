@@ -281,7 +281,7 @@ func (w *webUI) generateStatusReport(ctx context.Context) statusReport {
 		report.add("Восстановление", "Состояние восстановления недоступно")
 	}
 	if dns, err := w.engine.DNSStatus(); err == nil {
-		report.add("DNS Xray", fmt.Sprintf("Автонастройка Hot Watcher: %v; параллельные запросы: %v; запуск текущего DNS в Xray не подтверждён: %v", dns.Managed, dns.ParallelQueries, dns.RuntimeActivationUnverified), fmt.Sprintf("Серверов в конфиге: %d", len(dns.Servers)), dns.Note)
+		report.add("DNS Xray", fmt.Sprintf("Автонастройка Hot Watcher: %v; параллельные запросы: %v; запуск текущего DNS в Xray не подтверждён: %v", dns.Managed, dns.ParallelQueries, dns.RuntimeActivationUnverified), fmt.Sprintf("Серверов в конфиге: %d; автоподбор: %v", len(dns.Servers), dns.AutoSelectionEnabled), "Выбраны в интерфейсе: "+strings.Join(dns.SelectedProviderIDs, ", "), "Записаны в DNS: "+strings.Join(dns.AppliedProviderIDs, ", "), dns.Note)
 	} else {
 		report.add("DNS Xray", "Состояние DNS недоступно")
 	}
@@ -294,6 +294,9 @@ func (w *webUI) generateStatusReport(ctx context.Context) statusReport {
 		lanLines = append(lanLines, fmt.Sprintf("%s: известно=%v; правило=%v; порт=%d; входящих=%d; перенаправлено=%d; причина=%s", item.name, item.path.Known, item.path.Present, item.path.ExpectedPort, item.path.IngressPackets, item.path.RedirectedPackets, item.path.Missing))
 	}
 	report.add("Перехват LAN (счётчики накопительные)", lanLines...)
+	report.add("Netfilter XKeen (независимая проверка)", firewallEvidence(ctx, w.config.ConfigDir)...)
+	report.add("Сокеты входов Xray", transparentListenerReport(lan.TCP.ExpectedPort, lan.UDP.ExpectedPort)...)
+	report.add("Маршруты трафика LAN в Xray", routingSummary(w.config.ConfigDir)...)
 	ipBinary := findIPTablesSave("ip")
 	if ipBinary == "" {
 		report.add("Политика маршрутизации", "Утилита ip недоступна")
@@ -302,14 +305,18 @@ func (w *webUI) generateStatusReport(ctx context.Context) statusReport {
 		routeLines = append(routeLines, fixedReadCommand(ctx, ipBinary, "-4", "rule", "show")...)
 		routeLines = append(routeLines, "IPv4 routes:")
 		routeLines = append(routeLines, fixedReadCommand(ctx, ipBinary, "-4", "route", "show")...)
+		routeLines = append(routeLines, "IPv4 table 111 (fwmark 0x111):")
+		routeLines = append(routeLines, fixedReadCommand(ctx, ipBinary, "-4", "route", "show", "table", "111")...)
 		routeLines = append(routeLines, "IPv6 rules:")
 		routeLines = append(routeLines, fixedReadCommand(ctx, ipBinary, "-6", "rule", "show")...)
+		routeLines = append(routeLines, "IPv6 table 111 (fwmark 0x111):")
+		routeLines = append(routeLines, fixedReadCommand(ctx, ipBinary, "-6", "route", "show", "table", "111")...)
 		report.add("Политика маршрутизации", routeLines...)
 	}
 	report.add("Процессы /proc", reportProcesses("/proc", w.config.XrayBinary, w.config.ConfigDir, w.config.StateDir)...)
 	report.add("XKeen -status", fixedReadCommand(ctx, xkeenCommand, "-status")...)
 	report.add("XKeen -pbr status", fixedReadCommand(ctx, xkeenCommand, "-pbr", "status")...)
-	report.add("XKeen -pr status", fixedReadCommand(ctx, xkeenCommand, "-pr", "status")...)
+	report.add("Проксирование Entware XKeen", readXKeenEntwareProxyMode().Lines...)
 	report.add("XKeen -xtest (только синтаксис)", fixedReadCommand(ctx, xkeenCommand, "-xtest")...)
 	if last, err := w.engine.LastURLTest(); err == nil && last != nil {
 		lines := []string{fmt.Sprintf("Дата: %s; успешен: %v; сайтов: %d", last.Time.Format(time.RFC3339), last.Passed, len(last.Results))}

@@ -305,10 +305,15 @@ test('exported URL Test describes an endpoint HTTPS check, not site availability
 
 test('DNS page shows file state and probe results without treating a local DoH route as VLESS', async () => {
   const a = await app();
-  a.renderDNS({ config_file: '/opt/etc/xray/configs/03_dns.json', managed: true, parallel_queries: true, servers: ['https+local://1.1.1.1/dns-query'], runtime_activation_unverified: true });
+  a.renderDNS({ config_file: '/opt/etc/xray/configs/02_hotwatcher_dns.json', generated_config_file: '/opt/etc/xray/configs/02_hotwatcher_dns.json', managed: true, parallel_queries: true, servers: ['https+local://1.1.1.1/dns-query'], runtime_activation_unverified: true, applied_provider_ids: ['cloudflare'], auto_selection_enabled: true, providers: [{ id: 'cloudflare', name: 'Cloudflare', url: 'https://1.1.1.1/dns-query', selected: true, eligible: true }, { id: 'google', name: 'Google', url: 'https://8.8.8.8/dns-query', selected: true, eligible: true }, { id: 'yandex', name: 'Яндекс', url: 'https://77.88.8.8/dns-query', selected: false, eligible: true }] });
   assert.match(a.elements.get('dnsBadge').textContent, /подготовлен/);
   assert.match(a.elements.get('dnsNote').textContent, /ручной перезапуск/);
-  assert.equal(a.elements.get('dnsOnButton').disabled, true);
+  assert.match(a.elements.get('dnsConfigFile').textContent, /02_hotwatcher_dns.json/);
+  assert.match(a.elements.get('dnsAppliedProviders').textContent, /cloudflare/);
+  assert.equal(a.elements.get('dnsProviderList').querySelectorAll('input').length, 3);
+  assert.equal(a.elements.get('dnsProviderList').querySelectorAll('input')[2].checked, false);
+  assert.equal(a.elements.get('dnsOnButton').disabled, false);
+  assert.match(a.elements.get('dnsOnButton').textContent, /обновить DNS auto/);
   assert.equal(a.elements.get('dnsOffButton').disabled, false);
   a.renderJobResult({ action: 'dns-test', result: [{ name: 'Cloudflare', success: true, median_ms: 28, responses: 3 }] });
   assert.match(a.elements.get('dnsResult').textContent, /Cloudflare: доступен · 28 мс · 3\/3/);
@@ -317,7 +322,30 @@ test('DNS page shows file state and probe results without treating a local DoH r
   a.setSession();
   await a.elements.get('dnsTestButton').listeners.click();
   const call = a.calls.find(c => c.url === '/api/action');
-  assert.deepEqual(JSON.parse(call.options.body), { action: 'dns-test', tag: '' });
+  assert.deepEqual(JSON.parse(call.options.body), { action: 'dns-test', tag: '', providers: ['cloudflare', 'google'], auto_select: true });
+});
+
+test('DNS auto sends provider choice and ranking preference', async () => {
+  const a = await app();
+  a.renderDNS({ managed: false, providers: [{ id: 'cloudflare', name: 'Cloudflare', url: 'https://1.1.1.1/dns-query', selected: true, eligible: true }, { id: 'google', name: 'Google', url: 'https://8.8.8.8/dns-query', selected: true, eligible: true }, { id: 'quad9', name: 'Quad9', url: 'https://9.9.9.9/dns-query', selected: true, eligible: true }] });
+  a.elements.get('dnsProviderList').querySelectorAll('input')[0].checked = false;
+  a.elements.get('dnsAutoSelect').checked = false;
+  a.setSession();
+  await a.elements.get('dnsOnButton').listeners.click();
+  const call = a.calls.find(c => c.url === '/api/action');
+  assert.deepEqual(JSON.parse(call.options.body), { action: 'dns-on', tag: '', providers: ['google', 'quad9'], auto_select: false });
+  a.renderJobResult({ action: 'dns-on', result: { probes: [], config_file: '/opt/etc/xray/configs/02_hotwatcher_dns.json', selected_providers: ['google'] } });
+  assert.match(a.elements.get('dnsResult').textContent, /Выбраны: google/);
+});
+
+test('DNS auto blocks a single provider while allowing its probe', async () => {
+  const a = await app();
+  a.renderDNS({ managed: false, providers: [{ id: 'cloudflare', name: 'Cloudflare', url: 'https://1.1.1.1/dns-query', selected: true, eligible: true }] });
+  a.setSession();
+  await a.elements.get('dnsOnButton').listeners.click();
+  assert.equal(a.calls.some(c => c.url === '/api/action'), false);
+  await a.elements.get('dnsTestButton').listeners.click();
+  assert.deepEqual(JSON.parse(a.calls.find(c => c.url === '/api/action').options.body).providers, ['cloudflare']);
 });
 
 test('advanced update controls send distinct disable, pause and pin requests', async () => {
