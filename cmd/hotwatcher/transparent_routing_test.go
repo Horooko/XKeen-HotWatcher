@@ -46,15 +46,15 @@ COMMIT`
 	}
 }
 
-func TestParseInterceptionDoesNotCountDifferentPortOrChain(t *testing.T) {
+func TestParseInterceptionRejectsDifferentPortInForceChain(t *testing.T) {
 	rules := `*nat
 :xkeen - [0:0]
 [9:540] -A PREROUTING -p tcp -j xkeen_force
 [9:540] -A xkeen -p tcp -j REDIRECT --to-ports 11111
 COMMIT`
 	got := parseInterceptionRules(rules, "tcp", "REDIRECT", 61219)
-	if !got.Known || got.Present || got.Missing != "prerouting_jump_missing" || got.IngressPackets != 0 || got.RedirectedPackets != 0 {
-		t.Fatalf("wrong chain/port was accepted: %+v", got)
+	if !got.Known || got.Present || got.Missing != "redirect_target_missing" || got.IngressPackets != 9 || got.RedirectedPackets != 0 {
+		t.Fatalf("wrong redirect port was accepted: %+v", got)
 	}
 }
 
