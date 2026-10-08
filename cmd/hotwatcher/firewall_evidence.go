@@ -20,7 +20,7 @@ var xkeenFirewallPath = []string{"/opt/bin", "/opt/sbin", "/sbin", "/bin", "/usr
 
 const xkeenNetfilterHook = "/opt/etc/ndm/netfilter.d/proxy.sh"
 
-var xkeenHookSetting = regexp.MustCompile(`^\s*(iptables_supported|ip6tables_supported|mode_proxy|port_redirect|port_tproxy)=(?:'([^']*)'|"([^"]*)"|([^\s#;]+))\s*(?:#.*)?$`)
+var xkeenHookSetting = regexp.MustCompile(`^\s*(iptables_supported|ip6tables_supported|mode_proxy|port_redirect|port_tproxy|table_id|table_mark)=(?:'([^']*)'|"([^"]*)"|([^\s#;]+))\s*(?:#.*)?$`)
 
 // The generated hook can include credentials. Only inspect fixed, harmless
 // assignments; never print its source or arbitrary assignment values.
@@ -49,9 +49,13 @@ func xkeenHookSettings(path string) map[string]string {
 			if value == "Hybrid" || value == "TProxy" || value == "Redirect" || value == "Other" {
 				result[match[1]] = value
 			}
-		case "port_redirect", "port_tproxy":
+		case "port_redirect", "port_tproxy", "table_id":
 			if port, err := strconv.Atoi(value); err == nil && port > 0 && port <= 65535 {
 				result[match[1]] = value
+			}
+		case "table_mark":
+			if mark, err := strconv.ParseUint(value, 0, 32); err == nil && mark > 0 {
+				result[match[1]] = fmt.Sprintf("0x%x", mark)
 			}
 		}
 	}
@@ -63,7 +67,7 @@ func xkeenHookPreconditions() []string {
 	info, err := os.Lstat("/tmp/.xkeen/ready")
 	lines = append(lines, fmt.Sprintf("Маркер /tmp/.xkeen/ready: существует=%v; обычный файл=%v", err == nil, err == nil && info.Mode().IsRegular()))
 	settings := xkeenHookSettings(xkeenNetfilterHook)
-	for _, name := range []string{"iptables_supported", "ip6tables_supported", "mode_proxy", "port_redirect", "port_tproxy"} {
+	for _, name := range []string{"iptables_supported", "ip6tables_supported", "mode_proxy", "port_redirect", "port_tproxy", "table_id", "table_mark"} {
 		value := settings[name]
 		if value == "" {
 			value = "не найдено или значение неизвестно"

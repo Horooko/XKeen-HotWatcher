@@ -27,6 +27,7 @@ type reportSection struct {
 
 type statusReport struct {
 	GeneratedAt time.Time       `json:"generated_at"`
+	Checks      []statusCheck   `json:"checks"`
 	Sections    []reportSection `json:"sections"`
 	Text        string          `json:"text"`
 }
@@ -77,6 +78,12 @@ func (r *statusReport) add(title string, lines ...string) {
 func (r *statusReport) finish() {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Hot Watcher — диагностический отчёт\nДата UTC: %s\n", r.GeneratedAt.Format(time.RFC3339))
+	if len(r.Checks) > 0 {
+		b.WriteString("\n=== Чек-лист ===\n")
+		for _, check := range r.Checks {
+			fmt.Fprintf(&b, "[%s] %s / %s: %s\n", strings.ToUpper(check.State), check.Group, check.Title, check.Detail)
+		}
+	}
 	for _, section := range r.Sections {
 		fmt.Fprintf(&b, "\n=== %s ===\n", section.Title)
 		for _, line := range section.Lines {
@@ -259,6 +266,7 @@ func (w *webUI) generateStatusReport(ctx context.Context) statusReport {
 		}
 	}
 	report.add("Состояние Hot Watcher (последний фоновый снимок)", statusLines...)
+	operationCheck := newStatusCheck("activity", "Hot Watcher", "Текущая операция", "unknown", "Состояние операции недоступно")
 	if activity, err := hw.ActivityStatus(w.config); err == nil {
 		lines := []string{fmt.Sprintf("busy: %v; PID: %d; операция: %s; длительность: %d сек; фон приостановлен: %v", activity.Lock.Busy, activity.Lock.PID, activity.Lock.Operation, activity.ElapsedSeconds, activity.BackgroundPaused), activity.Message}
 		w.mu.Lock()
@@ -268,24 +276,56 @@ func (w *webUI) generateStatusReport(ctx context.Context) statusReport {
 			lines = append(lines, fmt.Sprintf("Задача панели: %s; ID: %d; длительность: %d сек", job.Action, job.ID, max(0, int64(time.Since(job.StartedAt).Seconds()))))
 		}
 		report.add("Текущая операция", lines...)
+		if activity.Lock.Busy || job.State == "running" {
+			name := activity.Lock.Operation
+			if job.State == "running" {
+				name = job.Action
+			}
+			if name == "" {
+				name = "операция"
+			}
+			operationCheck = newStatusCheck("activity", "Hot Watcher", "Текущая операция", "info", fmt.Sprintf("%s выполняется %d сек; подробности в полном отчёте", name, activity.ElapsedSeconds))
+		} else {
+			operationCheck = newStatusCheck("activity", "Hot Watcher", "Текущая операция", "ok", "Нет операции под общей блокировкой")
+		}
 	} else {
 		report.add("Текущая операция", "Состояние операции недоступно")
 	}
+	recoveryCheck := newStatusCheck("recovery", "Hot Watcher", "Незавершённое восстановление", "unknown", "Состояние восстановления недоступно")
 	if recovery, err := w.engine.RecoveryStatus(); err == nil {
 		lines := []string{fmt.Sprintf("Незавершённая транзакция: %v", recovery.PendingTransaction), recovery.SuggestedCommand}
 		if recovery.HardSync != nil {
 			lines = append(lines, "Сохранённый hard-sync: этап "+recovery.HardSync.Stage, "Обновлён: "+recovery.HardSync.UpdatedAt.Format(time.RFC3339))
 		}
 		report.add("Восстановление", lines...)
+		switch {
+		case recovery.PendingTransaction:
+			recoveryCheck = newStatusCheck("recovery", "Hot Watcher", "Незавершённое восстановление", "issue", "Есть незавершённая транзакция; подробности в полном отчёте")
+		case recovery.HardSync != nil:
+			recoveryCheck = newStatusCheck("recovery", "Hot Watcher", "Сохранённый hard-sync", "info", "Сохранён этап "+recovery.HardSync.Stage+"; это не доказывает текущий сбой LAN")
+		default:
+			recoveryCheck = newStatusCheck("recovery", "Hot Watcher", "Незавершённое восстановление", "ok", "Незавершённых операций нет")
+		}
 	} else {
 		report.add("Восстановление", "Состояние восстановления недоступно")
 	}
+	dnsCheck := newStatusCheck("dns", "Xray и ключ", "DNS Xray", "unknown", "Состояние DNS недоступно")
 	if dns, err := w.engine.DNSStatus(); err == nil {
 		report.add("DNS Xray", fmt.Sprintf("Автонастройка Hot Watcher: %v; параллельные запросы: %v; запуск текущего DNS в Xray не подтверждён: %v", dns.Managed, dns.ParallelQueries, dns.RuntimeActivationUnverified), fmt.Sprintf("Серверов в конфиге: %d; автоподбор: %v", len(dns.Servers), dns.AutoSelectionEnabled), "Выбраны в интерфейсе: "+strings.Join(dns.SelectedProviderIDs, ", "), "Записаны в DNS: "+strings.Join(dns.AppliedProviderIDs, ", "), dns.Note)
+		switch {
+		case dns.Managed && len(dns.Servers) == 0:
+			dnsCheck = newStatusCheck("dns", "Xray и ключ", "DNS Xray", "issue", "DNS auto включён, но серверов в конфигурации нет")
+		case dns.Managed:
+			dnsCheck = newStatusCheck("dns", "Xray и ключ", "DNS Xray", "info", fmt.Sprintf("DNS auto записал %d серверов; применение в работающем Xray отдельно не подтверждено", len(dns.Servers)))
+		default:
+			dnsCheck = newStatusCheck("dns", "Xray и ключ", "DNS Xray", "info", "DNS auto не управляет текущей конфигурацией")
+		}
 	} else {
 		report.add("DNS Xray", "Состояние DNS недоступно")
 	}
 	lan := readLANInterception(ctx, w.config.ConfigDir)
+	report.Checks = buildStatusChecks(ctx, w.config, status, statusErr, lan)
+	report.Checks = append(report.Checks, operationCheck, recoveryCheck, dnsCheck)
 	lanLines := make([]string, 0, 4)
 	for _, item := range []struct {
 		name string
@@ -319,7 +359,13 @@ func (w *webUI) generateStatusReport(ctx context.Context) statusReport {
 	report.add("XKeen -status", fixedReadCommand(ctx, xkeenCommand, "-status")...)
 	report.add("XKeen -pbr status", fixedReadCommand(ctx, xkeenCommand, "-pbr", "status")...)
 	report.add("Проксирование Entware XKeen", readXKeenEntwareProxyMode().Lines...)
-	report.add("XKeen -xtest (только синтаксис)", fixedReadCommand(ctx, xkeenCommand, "-xtest")...)
+	xtest := fixedReadCommand(ctx, xkeenCommand, "-xtest")
+	report.add("XKeen -xtest (только синтаксис)", xtest...)
+	if strings.Contains(strings.Join(xtest, "\n"), "Configuration OK.") {
+		report.Checks = append(report.Checks, newStatusCheck("xray-syntax", "Xray и ключ", "Синтаксис конфигурации", "ok", "xkeen -xtest: Configuration OK; работа трафика проверяется отдельно"))
+	} else {
+		report.Checks = append(report.Checks, newStatusCheck("xray-syntax", "Xray и ключ", "Синтаксис конфигурации", "issue", "xkeen -xtest не подтвердил корректную конфигурацию"))
+	}
 	if last, err := w.engine.LastURLTest(); err == nil && last != nil {
 		lines := []string{fmt.Sprintf("Дата: %s; успешен: %v; сайтов: %d", last.Time.Format(time.RFC3339), last.Passed, len(last.Results))}
 		for _, result := range last.Results {
@@ -331,8 +377,10 @@ func (w *webUI) generateStatusReport(ctx context.Context) statusReport {
 	}
 	if latency, err := w.engine.SelectedIsolatedHTTPSProbe(); err == nil {
 		report.add("Выбранный ключ", fmt.Sprintf("HTTPS-проба через отдельный временный Xray: %d мс", latency.Milliseconds()), "Проверка не измеряет ICMP ping и не подтверждает маршрут с ПК через LAN.")
+		report.Checks = append(report.Checks, newStatusCheck("selected-probe", "Xray и ключ", "Проба выбранного ключа", "info", fmt.Sprintf("Отдельный Xray: %d мс; не подтверждает маршрут клиента LAN", latency.Milliseconds())))
 	} else {
 		report.add("Выбранный ключ", "HTTPS-проба через отдельный временный Xray неуспешна или недоступна", "Проверка не переключала ключи и не меняла работающий Xray.")
+		report.Checks = append(report.Checks, newStatusCheck("selected-probe", "Xray и ключ", "Проба выбранного ключа", "unknown", "Отдельная HTTPS-проба неуспешна или недоступна; ключ не переключался"))
 	}
 	logs := readXrayLogSettings(w.config.ConfigDir)
 	if !logs.ConfigKnown {

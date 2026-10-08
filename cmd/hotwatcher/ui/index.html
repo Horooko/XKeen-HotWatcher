@@ -135,7 +135,8 @@
           <p class="site-footnote">Адреса, UUID, токены и другие секреты скрываются в отчёте. Перед отправкой файла третьим лицам просмотрите его: имена процессов и фрагменты журналов могут содержать личные данные.</p>
           <div id="statusReportState" class="system-diagnosis" role="status">Отчёт ещё не собран. Нажмите «Собрать отчёт».</div>
           <div id="statusReportActions" class="tool-actions" hidden><button id="downloadStatusTextButton" class="button secondary compact" type="button">Скачать .txt</button><button id="downloadStatusJSONButton" class="button secondary compact" type="button">Скачать .json</button></div>
-          <div id="statusReportSections" class="status-report-sections"></div>
+          <div id="statusReportChecklist" class="status-report-checklist" hidden></div>
+          <details id="statusReportDetails" class="status-report-details" hidden><summary>Полный диагностический отчёт и журналы</summary><div id="statusReportSections" class="status-report-sections"></div></details>
         </section>
         </div>
 

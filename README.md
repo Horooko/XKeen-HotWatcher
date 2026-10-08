@@ -361,6 +361,7 @@ hotwatcher abort
 | [SUBSCRIPTIONS.md](docs/SUBSCRIPTIONS.md) | Форматы и строгая поддержка VLESS |
 | [SECURITY_AND_LIMITATIONS.md](docs/SECURITY_AND_LIMITATIONS.md) | Kill-switch, IP/UDP, секреты, ограничения |
 | [TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Диагностика ошибок и безопасный отчёт |
+| [XKEEN_NETFILTER_CHECKLIST.md](docs/XKEEN_NETFILTER_CHECKLIST.md) | Чек-лист LAN, модули Netfilter и подтверждённый случай XKeen 2.1 |
 | [ROLLBACK.md](docs/ROLLBACK.md) | Отмена транзакции и возврат к старой схеме |
 | [TESTING.md](docs/TESTING.md) | Автотесты и проверки на реальном роутере |
 | [BUILD.md](docs/BUILD.md) | Сборка, архитектуры, CI |

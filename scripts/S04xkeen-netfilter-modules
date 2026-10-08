@@ -1,0 +1,29 @@
+#!/bin/sh
+# Load XKeen Hybrid's kernel matches before S05xkeen starts.
+# This does not add, remove, or reorder firewall rules.
+PATH=/bin:/sbin:/usr/bin:/usr/sbin:/opt/bin:/opt/sbin
+export PATH
+
+case "${1:-start}" in
+    start) ;;
+    stop) exit 0 ;;
+    *) exit 0 ;;
+esac
+
+directory="/lib/modules/$(uname -r)"
+for module in xt_comment xt_dscp xt_multiport xt_socket xt_TPROXY; do
+    if grep -q "^$module " /proc/modules 2>/dev/null; then
+        continue
+    fi
+    file="$directory/$module.ko"
+    if [ ! -f "$file" ]; then
+        logger -p error -t xkeen-kmods "missing kernel module $module" 2>/dev/null
+        continue
+    fi
+    if ! insmod "$file" >/dev/null 2>&1; then
+        logger -p error -t xkeen-kmods "failed to load kernel module $module" 2>/dev/null
+    elif ! grep -q "^$module " /proc/modules 2>/dev/null; then
+        logger -p error -t xkeen-kmods "module $module is absent after insmod" 2>/dev/null
+    fi
+done
+exit 0

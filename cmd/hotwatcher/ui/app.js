@@ -161,6 +161,45 @@
     return el;
   }
   function renderStatusReport(report) {
+    const checklist = $("statusReportChecklist");
+    checklist.replaceChildren();
+    const checks = Array.isArray(report.checks) ? report.checks : [];
+    if (checks.length) {
+      const counts = { ok: 0, issue: 0, unknown: 0, info: 0 };
+      const groups = new Map();
+      for (const check of checks) {
+        const state = Object.hasOwn(counts, check.state) ? check.state : "info";
+        counts[state]++;
+        const name = check.group || "Прочее";
+        if (!groups.has(name)) groups.set(name, []);
+        groups.get(name).push({ ...check, state });
+      }
+      const summary = make("div", "status-check-summary");
+      for (const [state, label] of [["ok", "Пройдено"], ["issue", "Требует внимания"], ["unknown", "Нет данных"], ["info", "Информация"]]) {
+        const item = make("div", "status-check-count " + state);
+        item.append(make("strong", "", String(counts[state])), make("span", "", label));
+        summary.append(item);
+      }
+      checklist.append(summary);
+      for (const [name, items] of groups) {
+        const group = make("section", "panel status-check-group");
+        group.append(make("h3", "", name));
+        const list = make("div", "status-check-list");
+        for (const check of items) {
+          const row = make("div", "status-check-row " + check.state);
+          const icon = make("span", "status-check-icon", check.state === "ok" ? "✓" : check.state === "issue" ? "!" : check.state === "unknown" ? "?" : "i");
+          icon.setAttribute("aria-hidden", "true");
+          const body = make("div", "status-check-body");
+          body.append(make("strong", "", check.title || "Проверка"));
+          if (check.detail) body.append(make("p", "", check.detail));
+          row.append(icon, body, make("span", "status-check-label", check.state === "ok" ? "ОК" : check.state === "issue" ? "ПРОБЛЕМА" : check.state === "unknown" ? "НЕТ ДАННЫХ" : "СВЕДЕНИЯ"));
+          list.append(row);
+        }
+        group.append(list);
+        checklist.append(group);
+      }
+    }
+    checklist.hidden = !checks.length;
     const sections = $("statusReportSections");
     sections.replaceChildren();
     for (const section of Array.isArray(report.sections) ? report.sections : []) {
@@ -169,7 +208,10 @@
       card.append(make("pre", "", Array.isArray(section.lines) ? section.lines.join("\n") : "Нет данных"));
       sections.append(card);
     }
-    text("statusReportState", "Собран " + dateLabel(report.generated_at) + " · " + sections.children.length + " разделов. Снимок не обновляется автоматически.");
+    const details = $("statusReportDetails");
+    details.hidden = !sections.children.length;
+    details.open = !checks.length;
+    text("statusReportState", "Собран " + dateLabel(report.generated_at) + " · " + checks.length + " проверок · " + sections.children.length + " разделов. Снимок не обновляется автоматически.");
     $("statusReportActions").hidden = false;
   }
   async function generateStatusReport() {
@@ -177,6 +219,9 @@
     statusReportLoading = true;
     statusReport = null;
     $("statusReportActions").hidden = true;
+    $("statusReportChecklist").hidden = true;
+    $("statusReportChecklist").replaceChildren();
+    $("statusReportDetails").hidden = true;
     $("statusReportSections").replaceChildren();
     $("generateStatusReportButton").disabled = true;
     text("statusReportState", "Собираю отчёт. Проверка выбранного ключа может занять несколько секунд…");

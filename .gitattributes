@@ -1,0 +1,2 @@
+*.sh text eol=lf
+scripts/S04xkeen-netfilter-modules text eol=lf
