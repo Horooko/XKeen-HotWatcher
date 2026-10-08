@@ -34,8 +34,12 @@ var dnsCandidates = []dnsCandidate{
 	// transparent-proxy router this can feed back into Xray after takeover.
 	// Google's IP endpoint serves RFC 8484 with a certificate valid for the IP.
 	{ID: "google", Name: "Google", URL: "https://8.8.8.8/dns-query", Hostname: "8.8.8.8", BootstrapIP: "8.8.8.8", Default: true},
+	{ID: "cloudflare-alt", Name: "Cloudflare", URL: "https://1.0.0.1/dns-query", Hostname: "1.0.0.1", BootstrapIP: "1.0.0.1", Default: true},
+	{ID: "google-alt", Name: "Google", URL: "https://8.8.4.4/dns-query", Hostname: "8.8.4.4", BootstrapIP: "8.8.4.4", Default: true},
 	{ID: "alidns", Name: "AliDNS", URL: "https://223.5.5.5/dns-query", Hostname: "223.5.5.5", BootstrapIP: "223.5.5.5", Default: true},
+	{ID: "alidns-alt", Name: "AliDNS", URL: "https://223.6.6.6/dns-query", Hostname: "223.6.6.6", BootstrapIP: "223.6.6.6", Default: true},
 	{ID: "dnspod", Name: "DNSPod", URL: "https://1.12.12.12/dns-query", Hostname: "1.12.12.12", BootstrapIP: "1.12.12.12", Default: true},
+	{ID: "dnspod-alt", Name: "DNSPod", URL: "https://120.53.53.53/dns-query", Hostname: "120.53.53.53", BootstrapIP: "120.53.53.53", Default: true},
 	{ID: "opendns", Name: "OpenDNS", URL: "https://208.67.222.222/dns-query", Hostname: "208.67.222.222", BootstrapIP: "208.67.222.222", Default: true},
 	{ID: "adguard", Name: "AdGuard", URL: "https://94.140.14.14/dns-query", Hostname: "94.140.14.14", BootstrapIP: "94.140.14.14", Default: true},
 	{ID: "quad9", Name: "Quad9", URL: "https://9.9.9.9/dns-query", Hostname: "9.9.9.9", BootstrapIP: "9.9.9.9", Default: true},
@@ -197,10 +201,15 @@ func (e *Engine) DNSTestSelected(ids []string) ([]DNSProbeResult, error) {
 	}
 	results := make([]DNSProbeResult, len(candidates))
 	var wg sync.WaitGroup
+	// Keep the probe from opening dozens of connections at once on a small
+	// router when the full catalog is selected.
+	limit := make(chan struct{}, 4)
 	for i, candidate := range candidates {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			limit <- struct{}{}
+			defer func() { <-limit }()
 			result := DNSProbeResult{ID: candidate.ID, Name: candidate.Name, URL: candidate.URL}
 			latencies := []time.Duration{}
 			for n := 0; n < 3; n++ {

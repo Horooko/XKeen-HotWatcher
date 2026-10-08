@@ -1,6 +1,49 @@
 package main
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func TestXKeenHookSettingsOnlyKnownAssignments(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "proxy.sh")
+	source := "#!/bin/sh\niptables_supported='false'\nip6tables_supported='true'\nmode_proxy='Hybrid'\nport_redirect='61219'\nport_tproxy=61219\ntable_id='111'\ntable_mark='0x111'\nsecret='never print this'\niptables_supported='$(bad)'\n"
+	if err := os.WriteFile(path, []byte(source), 0600); err != nil {
+		t.Fatal(err)
+	}
+	got := xkeenHookSettings(path)
+	if got["iptables_supported"] != "false" || got["ip6tables_supported"] != "true" || got["mode_proxy"] != "Hybrid" || got["port_redirect"] != "61219" || got["port_tproxy"] != "61219" || got["table_id"] != "111" || got["table_mark"] != "0x111" {
+		t.Fatalf("unexpected hook settings: %+v", got)
+	}
+	if len(got) != 7 {
+		t.Fatalf("unexpected fields from hook: %+v", got)
+	}
+}
+
+func TestXKeenHookSettingsRejectsSymlink(t *testing.T) {
+	dir := t.TempDir()
+	real := filepath.Join(dir, "real")
+	link := filepath.Join(dir, "proxy.sh")
+	if err := os.WriteFile(real, []byte("iptables_supported='true'\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	if len(xkeenHookSettings(link)) != 0 {
+		t.Fatal("symlink hook was read")
+	}
+}
+
+func TestTailBufferKeepsLatestSyslog(t *testing.T) {
+	w := &tailBuffer{max: 8}
+	_, _ = w.Write([]byte("old log\n"))
+	_, _ = w.Write([]byte("new failure"))
+	if string(w.buf) != " failure" {
+		t.Fatalf("tail = %q", w.buf)
+	}
+}
 
 func TestSummarizeFirewallRules(t *testing.T) {
 	nat := `*nat

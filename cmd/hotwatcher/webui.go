@@ -668,7 +668,7 @@ func webActionAllowed(action string) bool {
 		"update-pause-on", "update-pause-off", "update-download", "update-retry",
 		"dns-test", "dns-verify", "dns-on", "dns-off",
 		"doctor", "doctor-network", "plan", "keys-check", "adopt", "reconcile", "gc", "url-migrate",
-		"recover", "abort", "hold-on", "hold-off":
+		"recover", "abort", "hold-on", "hold-off", "lan-repair":
 		return true
 	}
 	return false
@@ -746,6 +746,11 @@ func (w *webUI) runAction(id uint64, action, tag string, providers []string, aut
 	} else {
 		err = hw.WithLockWaitNamed(w.config, "web "+action, 30*time.Second, func() error {
 			switch action {
+			case "lan-repair":
+				var repair lanRepairResult
+				repair, err = w.repairLAN(context.Background())
+				result = repair
+				return err
 			case "dns-on":
 				if providers != nil {
 					if err := w.engine.SaveDNSProviderSelection(providers, autoSelect); err != nil {

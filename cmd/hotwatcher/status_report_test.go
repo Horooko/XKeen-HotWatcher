@@ -105,3 +105,69 @@ func TestReportProcessesClassifiesServerAndAPIWithoutArguments(t *testing.T) {
 		t.Fatal("process arguments leaked")
 	}
 }
+
+func TestModuleCheckSeparatesInstalledFilesFromLoadedModules(t *testing.T) {
+	dir := t.TempDir()
+	proc := filepath.Join(dir, "modules")
+	modules := filepath.Join(dir, "lib")
+	if err := os.Mkdir(modules, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(proc, []byte("xt_comment 123 0 - Live 0x0\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(modules, "xt_comment.ko"), nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	files, unloaded, ok := moduleCheck(proc, []string{modules}, []string{"xt_comment", "xt_multiport"})
+	if !ok || len(files) != 1 || files[0] != "xt_multiport" || len(unloaded) != 1 || unloaded[0] != "xt_multiport" {
+		t.Fatalf("unexpected module state: files=%v unloaded=%v ok=%v", files, unloaded, ok)
+	}
+}
+
+func TestBootLoaderCheckDoesNotClaimItRanAfterReboot(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "S04xkeen-netfilter-modules")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if got := bootLoaderCheck(path); got.State != "issue" {
+		t.Fatalf("non-executable loader should be an issue: %+v", got)
+	}
+	if err := os.Chmod(path, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if got := bootLoaderCheck(path); got.State != "ok" || !strings.Contains(got.Detail, "не проверено") {
+		t.Fatalf("executable loader should state verification limit: %+v", got)
+	}
+}
+
+func TestStatusReportTextContainsChecklist(t *testing.T) {
+	report := statusReport{Checks: []statusCheck{newStatusCheck("lan-tcp", "Перехват LAN", "IPv4 TCP", "ok", "Правило найдено")}}
+	report.finish()
+	if !strings.Contains(report.Text, "=== Чек-лист ===") || !strings.Contains(report.Text, "[OK] Перехват LAN / IPv4 TCP") {
+		t.Fatalf("checklist missing in text export: %q", report.Text)
+	}
+}
+
+func TestNetfilterComponentState(t *testing.T) {
+	for _, item := range []struct{ output, want string }{
+		{"components: base,dhcpd,\n            kmod-netfilter,ppe", "ok"},
+		{"components: base,dhcpd,ppe", "issue"},
+		{"no component list", "unknown"},
+	} {
+		if got := netfilterComponentState(item.output); got != item.want {
+			t.Errorf("%q: got %s, want %s", item.output, got, item.want)
+		}
+	}
+}
+
+func TestTPROXYPolicyRouteRequiresMarkAndLocalRoute(t *testing.T) {
+	rules := "99: from all fwmark 0x111 lookup 111\n"
+	routes := "local default dev lo  scope host\n"
+	if !hasTPROXYPolicyRoute(rules, routes, "0x111", "111") {
+		t.Fatal("valid policy route was not recognized")
+	}
+	if hasTPROXYPolicyRoute(rules, routes, "0x222", "111") || hasTPROXYPolicyRoute(rules, "", "0x111", "111") {
+		t.Fatal("missing policy route was accepted")
+	}
+}

@@ -3,16 +3,141 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // XKeen resolves iptables through this PATH (see its generated S05xkeen).
 // Inspect every installed save frontend: different frontends can expose
 // different rule sets, and the normal LAN summary reads only the first one.
 var xkeenFirewallPath = []string{"/opt/bin", "/opt/sbin", "/sbin", "/bin", "/usr/sbin", "/usr/bin"}
+
+const xkeenNetfilterHook = "/opt/etc/ndm/netfilter.d/proxy.sh"
+
+var xkeenHookSetting = regexp.MustCompile(`^\s*(iptables_supported|ip6tables_supported|mode_proxy|port_redirect|port_tproxy|table_id|table_mark)=(?:'([^']*)'|"([^"]*)"|([^\s#;]+))\s*(?:#.*)?$`)
+
+// The generated hook can include credentials. Only inspect fixed, harmless
+// assignments; never print its source or arbitrary assignment values.
+func xkeenHookSettings(path string) map[string]string {
+	result := map[string]string{}
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Size() > 128*1024 {
+		return result
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return result
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		match := xkeenHookSetting.FindStringSubmatch(line)
+		if match == nil {
+			continue
+		}
+		value := match[2] + match[3] + match[4]
+		switch match[1] {
+		case "iptables_supported", "ip6tables_supported":
+			if value == "true" || value == "false" {
+				result[match[1]] = value
+			}
+		case "mode_proxy":
+			if value == "Hybrid" || value == "TProxy" || value == "Redirect" || value == "Other" {
+				result[match[1]] = value
+			}
+		case "port_redirect", "port_tproxy", "table_id":
+			if port, err := strconv.Atoi(value); err == nil && port > 0 && port <= 65535 {
+				result[match[1]] = value
+			}
+		case "table_mark":
+			if mark, err := strconv.ParseUint(value, 0, 32); err == nil && mark > 0 {
+				result[match[1]] = fmt.Sprintf("0x%x", mark)
+			}
+		}
+	}
+	return result
+}
+
+func xkeenHookPreconditions() []string {
+	lines := []string{}
+	info, err := os.Lstat("/tmp/.xkeen/ready")
+	lines = append(lines, fmt.Sprintf("Маркер /tmp/.xkeen/ready: существует=%v; обычный файл=%v", err == nil, err == nil && info.Mode().IsRegular()))
+	settings := xkeenHookSettings(xkeenNetfilterHook)
+	for _, name := range []string{"iptables_supported", "ip6tables_supported", "mode_proxy", "port_redirect", "port_tproxy", "table_id", "table_mark"} {
+		value := settings[name]
+		if value == "" {
+			value = "не найдено или значение неизвестно"
+		}
+		lines = append(lines, "Хук XKeen "+name+": "+value)
+	}
+	for _, name := range []string{"iptables", "iptables-restore", "ip6tables", "ip6tables-restore"} {
+		lines = append(lines, fmt.Sprintf("%s доступен в PATH XKeen: %v", name, findIPTablesSave(name) != ""))
+	}
+	return lines
+}
+
+type tailBuffer struct {
+	max int
+	buf []byte
+}
+
+func (w *tailBuffer) Write(data []byte) (int, error) {
+	n := len(data)
+	if n >= w.max {
+		w.buf = append(w.buf[:0], data[n-w.max:]...)
+		return n, nil
+	}
+	w.buf = append(w.buf, data...)
+	if len(w.buf) > w.max {
+		copy(w.buf, w.buf[len(w.buf)-w.max:])
+		w.buf = w.buf[:w.max]
+	}
+	return n, nil
+}
+
+func xkeenSyslogEvidence(parent context.Context) []string {
+	binary := findIPTablesSave("ndmc")
+	args := []string{"-c", "show log"}
+	if binary == "" {
+		binary = findIPTablesSave("logread")
+		args = nil
+	}
+	if binary == "" {
+		return []string{"ndmc и logread недоступны; системный журнал XKeen не прочитан"}
+	}
+	ctx, cancel := context.WithTimeout(parent, 4*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, binary, args...)
+	cmd.Env = entwareStatusEnv()
+	cmd.Stdin = nil
+	cmd.WaitDelay = 250 * time.Millisecond
+	output := &tailBuffer{max: 128 * 1024}
+	cmd.Stdout = output
+	cmd.Stderr = io.Discard
+	if err := cmd.Run(); err != nil || ctx.Err() != nil {
+		return []string{"Системный журнал XKeen недоступен или чтение превысило 4 секунды"}
+	}
+	var matched []string
+	for _, line := range strings.Split(string(output.buf), "\n") {
+		lower := strings.ToLower(line)
+		if strings.Contains(lower, "xkeen") || strings.Contains(lower, "iptables-restore") || strings.Contains(lower, "ip6tables-restore") {
+			if clean := safeReportLine(line); clean != "" {
+				matched = append(matched, clean)
+			}
+		}
+	}
+	if len(matched) > 40 {
+		matched = matched[len(matched)-40:]
+	}
+	if len(matched) == 0 {
+		return []string{"В последних 128 КиБ системного журнала нет сообщений XKeen/iptables-restore"}
+	}
+	return append([]string{"Последние сообщения XKeen/iptables-restore; адреса и секреты скрыты."}, matched...)
+}
 
 type firewallRuleEvidence struct {
 	Chain      bool
@@ -79,7 +204,7 @@ func installedFirewallSaves(name string) []string {
 
 func firewallEvidence(parent context.Context, configDir string) []string {
 	lines := []string{"Проверка читает правила без их изменения. XKeen ищет iptables в PATH: /opt/bin, /opt/sbin, /sbin, /bin, /usr/sbin, /usr/bin."}
-	hook := "/opt/etc/ndm/netfilter.d/proxy.sh"
+	hook := xkeenNetfilterHook
 	info, err := os.Lstat(hook)
 	switch {
 	case os.IsNotExist(err):

@@ -13,15 +13,33 @@ func TestDNSProviderDefaultsAndPersistence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(providers) != len(dnsCandidates) || len(ids) != len(providers)-1 {
+	if len(providers) != len(dnsCandidates)+len(dnsReferenceProviders) || len(ids) != len(dnsCandidates)-1 {
 		t.Fatalf("unexpected default provider catalog: %+v, %+v", providers, ids)
 	}
 	for _, p := range providers {
+		if !p.Eligible {
+			if p.Selected || p.Reason == "" {
+				t.Fatalf("reference DNS must be unselected with a reason: %+v", p)
+			}
+			continue
+		}
 		if p.ID == "yandex" && p.Selected {
 			t.Fatal("Yandex must be opt-in")
 		}
 		if p.ID != "yandex" && !p.Selected {
 			t.Fatalf("%s not selected by default", p.ID)
+		}
+	}
+	for _, endpoint := range []string{"https://223.6.6.6/dns-query", "https://120.53.53.53/dns-query", "https://1.0.0.1/dns-query", "https://8.8.4.4/dns-query", "quic://dns.adguard.com", "tls://dot.pub", "udp://[2606:4700:4700::1111]", "dhcp://auto"} {
+		found := false
+		for _, provider := range providers {
+			if provider.URL == endpoint {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("screenshot DNS missing from catalog: %s", endpoint)
 		}
 	}
 	if err := e.SaveDNSProviderSelection([]string{"google", "cloudflare"}, true); err != nil {
@@ -33,6 +51,9 @@ func TestDNSProviderDefaultsAndPersistence(t *testing.T) {
 	}
 	if err := e.SaveDNSProviderSelection([]string{"cloudflare", "unknown"}, true); err == nil {
 		t.Fatal("unknown provider was accepted")
+	}
+	if err := e.SaveDNSProviderSelection([]string{"cloudflare", "ref-local"}, true); err == nil {
+		t.Fatal("reference-only provider was accepted")
 	}
 	if err := e.SaveDNSProviderSelection([]string{"cloudflare", "cloudflare"}, true); err == nil {
 		t.Fatal("duplicate provider was accepted")

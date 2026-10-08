@@ -78,7 +78,7 @@ test('real Go JSON casing renders names, opaque tags, verification and actions',
 test('status report is generated only on demand, rendered and downloadable', async () => {
   const a = await app();
   assert.equal(a.calls.some(call => call.url === '/api/diagnostics/report'), false);
-  const report = { generated_at: '2026-10-08T08:00:00Z', sections: [{ title: 'Процессы и версии', lines: ['Xray: 1 процесс', 'Hot Watcher: 0.3.7'] }, { title: 'Активный ключ', lines: ['Проверка: 78 мс'] }], text: 'Hot Watcher\nXray: 1 процесс\n' };
+  const report = { generated_at: '2026-10-08T08:00:00Z', sections: [{ title: 'Процессы и версии', lines: ['Xray: 1 процесс', 'Hot Watcher: 0.3.8'] }, { title: 'Активный ключ', lines: ['Проверка: 78 мс'] }], text: 'Hot Watcher\nXray: 1 процесс\n' };
   a.context.fetch = async (url) => { a.calls.push({ url }); return { ok: true, json: async () => report }; };
   a.setSession();
   await a.elements.get('generateStatusReportButton').listeners.click();
@@ -231,6 +231,30 @@ test('system shows LAN interception rules and packet deltas without claiming cli
   assert.match(a.elements.get('lanIPv6TCPState').textContent, /Проверка недоступна/);
   assert.doesNotMatch(a.elements.get('lanTCPDetail').textContent, /сайт работает/);
 });
+test('missing LAN interception overrides healthy Xray API indicator', async () => {
+  const a = await app();
+  a.renderOverview(fixture());
+  a.renderSystem({ ...fixture().system, lan_interception: { checked_at: '2026-10-08T09:05:00Z', tcp: { known: true, present: false, missing: 'xkeen_chain_missing' }, udp: { known: true, present: false, missing: 'xkeen_chain_missing' } } });
+  assert.equal(a.elements.get('xkeenTopStatus').textContent, 'XKeen: нет перехвата LAN');
+  assert.equal(a.elements.get('repairLANButton').disabled, false);
+  a.renderOverview(fixture());
+  assert.match(a.elements.get('systemDiagnosis').textContent, /Перехват трафика LAN отсутствует/);
+  assert.match(a.elements.get('systemDiagnosis').className, /failed/);
+  assert.equal(a.elements.get('xkeenTopStatus').textContent, 'XKeen: нет перехвата LAN');
+});
+test('LAN repair remains available when only IPv6 interception is missing', async () => {
+  const a = await app();
+  a.renderOverview(fixture());
+  a.renderSystem({ ...fixture().system, lan_interception: { checked_at: '2026-10-08T09:05:00Z', tcp: { known: true, present: true }, udp: { known: true, present: true }, tcp_ipv6: { known: true, present: false }, udp_ipv6: { known: true, present: false } } });
+  assert.equal(a.elements.get('repairLANButton').disabled, false);
+});
+test('LAN repair result shows postcheck and sanitized diagnostic summary', async () => {
+  const a = await app();
+  a.renderJobResult({ action: 'lan-repair', result: { mode: 'xkeen_start_existing_xray', main_xray_pid: 1599, before: { tcp: { known: true, present: false }, udp: { known: true, present: false } }, after: { tcp: { known: true, present: true }, udp: { known: true, present: true } }, recovered: true, syslog_after: ['XKeen: rules applied'] } });
+  assert.match(a.elements.get('systemResult').textContent, /правила восстановлены/);
+  assert.match(a.elements.get('systemResult').textContent, /правило отсутствует → правило найдено/);
+  assert.match(a.elements.get('systemResult').textContent, /XKeen: rules applied/);
+});
 test('activity stop and resume use authenticated POST requests', async () => {
   const a = await app();
   a.setSession();
@@ -310,8 +334,8 @@ test('DNS page shows file state and probe results without treating a local DoH r
   assert.match(a.elements.get('dnsNote').textContent, /ручной перезапуск/);
   assert.match(a.elements.get('dnsConfigFile').textContent, /02_hotwatcher_dns.json/);
   assert.match(a.elements.get('dnsAppliedProviders').textContent, /cloudflare/);
-  assert.equal(a.elements.get('dnsProviderList').querySelectorAll('input').length, 3);
-  assert.equal(a.elements.get('dnsProviderList').querySelectorAll('input')[2].checked, false);
+  assert.match(a.elements.get('dnsCatalogText').value, /^https:\/\/1\.1\.1\.1\/dns-query$/m);
+  assert.match(a.elements.get('dnsCatalogText').value, /^# https:\/\/77\.88\.8\.8\/dns-query$/m);
   assert.equal(a.elements.get('dnsOnButton').disabled, false);
   assert.match(a.elements.get('dnsOnButton').textContent, /обновить DNS auto/);
   assert.equal(a.elements.get('dnsOffButton').disabled, false);
@@ -328,7 +352,7 @@ test('DNS page shows file state and probe results without treating a local DoH r
 test('DNS auto sends provider choice and ranking preference', async () => {
   const a = await app();
   a.renderDNS({ managed: false, providers: [{ id: 'cloudflare', name: 'Cloudflare', url: 'https://1.1.1.1/dns-query', selected: true, eligible: true }, { id: 'google', name: 'Google', url: 'https://8.8.8.8/dns-query', selected: true, eligible: true }, { id: 'quad9', name: 'Quad9', url: 'https://9.9.9.9/dns-query', selected: true, eligible: true }] });
-  a.elements.get('dnsProviderList').querySelectorAll('input')[0].checked = false;
+  a.elements.get('dnsCatalogText').value = a.elements.get('dnsCatalogText').value.replace('https://1.1.1.1/dns-query', '# https://1.1.1.1/dns-query');
   a.elements.get('dnsAutoSelect').checked = false;
   a.setSession();
   await a.elements.get('dnsOnButton').listeners.click();
@@ -346,6 +370,43 @@ test('DNS auto blocks a single provider while allowing its probe', async () => {
   assert.equal(a.calls.some(c => c.url === '/api/action'), false);
   await a.elements.get('dnsTestButton').listeners.click();
   assert.deepEqual(JSON.parse(a.calls.find(c => c.url === '/api/action').options.body).providers, ['cloudflare']);
+});
+
+test('DNS catalog lists reference endpoints but refuses unsupported or unknown active lines', async () => {
+  const a = await app();
+  a.renderDNS({ providers: [
+    { id: 'cloudflare', name: 'Cloudflare', url: 'https://1.1.1.1/dns-query', selected: true, eligible: true },
+    { id: 'google-alt', name: 'Google', url: 'https://8.8.4.4/dns-query', selected: true, eligible: true },
+    { id: 'ref-cloudflare-udp', name: 'Cloudflare', url: 'udp://1.1.1.1', selected: false, eligible: false, reason: 'UDP входит в routing Xray' }
+  ] });
+  const field = a.elements.get('dnsCatalogText');
+  assert.match(field.value, /^# udp:\/\/1\.1\.1\.1$/m);
+  a.setSession();
+  field.value += '\nudp://1.1.1.1';
+  await a.elements.get('dnsOnButton').listeners.click();
+  assert.equal(a.calls.some(c => c.url === '/api/action'), false);
+  assert.match(a.elements.get('operationMessage').textContent, /UDP входит в routing Xray/);
+  field.value = 'https://10.0.0.1/dns-query';
+  await a.elements.get('dnsTestButton').listeners.click();
+  assert.equal(a.calls.some(c => c.url === '/api/action'), false);
+  assert.match(a.elements.get('operationMessage').textContent, /неизвестный адрес/);
+  field.value = 'https://1.1.1.1/dns-query\nhttps://8.8.4.4/dns-query';
+  await a.elements.get('dnsTestButton').listeners.click();
+  assert.deepEqual(JSON.parse(a.calls.find(c => c.url === '/api/action').options.body).providers, ['cloudflare', 'google-alt']);
+});
+
+test('DNS catalog keeps unsaved edits during a status rerender', async () => {
+  const a = await app();
+  const state = { providers: [
+    { id: 'cloudflare', name: 'Cloudflare', url: 'https://1.1.1.1/dns-query', selected: true, eligible: true },
+    { id: 'google', name: 'Google', url: 'https://8.8.8.8/dns-query', selected: true, eligible: true }
+  ] };
+  a.renderDNS(state);
+  const field = a.elements.get('dnsCatalogText');
+  field.value = '# https://1.1.1.1/dns-query\nhttps://8.8.8.8/dns-query';
+  field.listeners.input();
+  a.renderDNS(state);
+  assert.equal(field.value, '# https://1.1.1.1/dns-query\nhttps://8.8.8.8/dns-query');
 });
 
 test('advanced update controls send distinct disable, pause and pin requests', async () => {
