@@ -37,7 +37,7 @@ func TestEconomyChecksDefaultAndPersistence(t *testing.T) {
 
 func TestBackgroundChecksStayIsolatedWhenEconomyModeIsEnabled(t *testing.T) {
 	c := Defaults()
-	c.StateDir = t.TempDir()
+	c.StateDir = filepath.Join(t.TempDir(), "state")
 	c.AllowLiveProbes = true
 	if enabled, err := c.EconomyChecks(); err != nil || enabled {
 		t.Fatalf("live mode must still require a separate UI opt-in: %v, %v", enabled, err)
@@ -53,7 +53,7 @@ func TestBackgroundChecksStayIsolatedWhenEconomyModeIsEnabled(t *testing.T) {
 
 func TestDiagnosticsStayIsolatedEvenWhenLiveChecksAreEnabled(t *testing.T) {
 	c := Defaults()
-	c.StateDir = t.TempDir()
+	c.StateDir = filepath.Join(t.TempDir(), "state")
 	c.AllowLiveProbes = true
 	if err := New(c).SetEconomyChecks(true); err != nil {
 		t.Fatal(err)
