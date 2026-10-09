@@ -20,7 +20,7 @@ var xkeenFirewallPath = []string{"/opt/bin", "/opt/sbin", "/sbin", "/bin", "/usr
 
 const xkeenNetfilterHook = "/opt/etc/ndm/netfilter.d/proxy.sh"
 
-var xkeenHookSetting = regexp.MustCompile(`^\s*(iptables_supported|ip6tables_supported|mode_proxy|port_redirect|port_tproxy|table_id|table_mark)=(?:'([^']*)'|"([^"]*)"|([^\s#;]+))\s*(?:#.*)?$`)
+var xkeenHookSetting = regexp.MustCompile(`^\s*(iptables_supported|ip6tables_supported|mode_proxy|port_redirect|port_tproxy|table_id|table_mark|proxy_dns|file_dns)=(?:'([^']*)'|"([^"]*)"|([^\s#;]+))\s*(?:#.*)?$`)
 
 // The generated hook can include credentials. Only inspect fixed, harmless
 // assignments; never print its source or arbitrary assignment values.
@@ -41,8 +41,12 @@ func xkeenHookSettings(path string) map[string]string {
 		}
 		value := match[2] + match[3] + match[4]
 		switch match[1] {
-		case "iptables_supported", "ip6tables_supported":
+		case "iptables_supported", "ip6tables_supported", "file_dns":
 			if value == "true" || value == "false" {
+				result[match[1]] = value
+			}
+		case "proxy_dns":
+			if value == "on" || value == "off" {
 				result[match[1]] = value
 			}
 		case "mode_proxy":
@@ -67,7 +71,7 @@ func xkeenHookPreconditions() []string {
 	info, err := os.Lstat("/tmp/.xkeen/ready")
 	lines = append(lines, fmt.Sprintf("Маркер /tmp/.xkeen/ready: существует=%v; обычный файл=%v", err == nil, err == nil && info.Mode().IsRegular()))
 	settings := xkeenHookSettings(xkeenNetfilterHook)
-	for _, name := range []string{"iptables_supported", "ip6tables_supported", "mode_proxy", "port_redirect", "port_tproxy", "table_id", "table_mark"} {
+	for _, name := range []string{"iptables_supported", "ip6tables_supported", "mode_proxy", "port_redirect", "port_tproxy", "table_id", "table_mark", "proxy_dns", "file_dns"} {
 		value := settings[name]
 		if value == "" {
 			value = "не найдено или значение неизвестно"

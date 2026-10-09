@@ -211,7 +211,8 @@
     const details = $("statusReportDetails");
     details.hidden = !sections.children.length;
     details.open = !checks.length;
-    text("statusReportState", "Собран " + dateLabel(report.generated_at) + " · " + checks.length + " проверок · " + sections.children.length + " разделов. Снимок не обновляется автоматически.");
+    const duration = Number.isFinite(report.duration_ms) ? ` · ${Math.round(report.duration_ms / 1000)} с` : "";
+    text("statusReportState", "Собран " + dateLabel(report.generated_at) + " · " + checks.length + " проверок · " + sections.children.length + " разделов" + duration + (report.partial ? " · Отчёт неполный" : "") + ". Снимок не обновляется автоматически.");
     $("statusReportActions").hidden = false;
   }
   async function generateStatusReport() {
@@ -264,7 +265,10 @@
     const body = $("keysBody");
     const rows = document.createDocumentFragment();
     text("keyCount", keys.length + " КЛЮЧЕЙ");
-    text("keysNote", inventory?.Note || "Из сохранённого состояния");
+    const fromSubscription = keys.filter((key) => key.Latest).length;
+    const retained = keys.filter((key) => key.Applied && !key.Latest).length;
+    const sourceNote = inventory?.FetchedAt ? `Последняя загрузка ${dateLabel(inventory.FetchedAt)}: ${fromSubscription} из подписки${retained ? ` · ${retained} сохранён отдельно` : ""}. Названия показаны из ответа подписки.` : "Из сохранённого состояния; свежей загрузки подписки нет.";
+    text("keysNote", inventory?.Note ? `${inventory.Note} ${sourceNote}` : sourceNote);
     const query = $("keySearch").value.trim().toLocaleLowerCase("ru-RU");
     let visible = 0;
     for (const key of keys) {
@@ -627,6 +631,8 @@
       if (!result.recovered) lines.push("Соберите новый отчёт на вкладке «Статусы» для точной причины.");
     } else if (job.action === "plan") {
       lines = [`Поддерживаемых ключей: ${result.supported_nodes ?? 0}`, `Новых или изменённых: ${result.new_or_changed ?? 0}`, `Не-VLESS записей пропущено: ${result.ignored_non_vless ?? 0}`, `Конфигурация изменится: ${result.configuration_changed ? "да" : "нет"}`];
+    } else if (job.action === "sync") {
+      lines = [`Источник: ${result.fetched_nodes ?? "?"} ключей${result.fetched_at ? ` · ${dateLabel(result.fetched_at)}` : ""}`, `Применено: ${result.applied_nodes ?? "?"}`, `Аварийных сохранено отдельно: ${result.emergency_nodes ?? "?"}`, `Обновлено названий: ${result.renamed_nodes ?? "?"}`];
     } else if (job.action === "keys-check") {
       lines = (result.Keys || []).map(k => `${k.Active ? "●" : "○"} ${k.Name || k.Tag}: ${k.PingMS == null ? "нет ответа" : Math.round(k.PingMS) + " мс"}`);
       if (result.APIWarning) lines.unshift(result.APIWarning);

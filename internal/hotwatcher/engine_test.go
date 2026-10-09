@@ -264,11 +264,19 @@ func TestRenameOnlyDoesNotMutateRuntimeOrFile(t *testing.T) {
 	if er := e.Sync(true); er != nil {
 		t.Fatal(er)
 	}
+	beforeState, err := e.state()
+	if err != nil {
+		t.Fatal(err)
+	}
 	before, _ := os.ReadFile(outputFile(e.C))
 	adds := len(r.adds)
 	*raw = uri(testUUID, "renamed")
 	if er := e.Sync(false); er != nil {
 		t.Fatal(er)
+	}
+	afterState, err := e.state()
+	if err != nil || len(afterState.Active) != 1 || afterState.Active[0].Name != "renamed" || afterState.Selected != beforeState.Selected || !afterState.UpdatedAt.Equal(beforeState.UpdatedAt) {
+		t.Fatalf("rename metadata was not persisted without reapplying: state=%+v err=%v", afterState, err)
 	}
 	after, _ := os.ReadFile(outputFile(e.C))
 	if string(before) != string(after) || len(r.adds) != adds {

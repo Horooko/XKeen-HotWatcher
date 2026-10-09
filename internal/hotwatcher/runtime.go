@@ -303,6 +303,13 @@ func (x Xray) probeLatencyLive(n Node) (time.Duration, error) {
 }
 
 func (x Xray) probeLatencyIsolated(n Node) (time.Duration, error) {
+	return x.probeLatencyIsolatedContext(context.Background(), n)
+}
+
+func (x Xray) probeLatencyIsolatedContext(parent context.Context, n Node) (time.Duration, error) {
+	if err := parent.Err(); err != nil {
+		return 0, err
+	}
 	ln, e := net.Listen("tcp", "127.0.0.1:0")
 	if e != nil {
 		return 0, errors.New("cannot reserve loopback probe port")
@@ -320,7 +327,7 @@ func (x Xray) probeLatencyIsolated(n Node) (time.Duration, error) {
 		return 0, e
 	}
 	duration := time.Duration(x.C.ProbeTimeoutSeconds*len(x.C.ProbeURLs)+5) * time.Second
-	ctx, cancel := context.WithTimeout(context.Background(), duration)
+	ctx, cancel := context.WithTimeout(parent, duration)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, x.C.XrayBinary, "run", "-config", file)
 	cmd.Env = append(isolatedEnv(), "XRAY_LOCATION_ASSET="+x.C.AssetDir)
@@ -335,6 +342,8 @@ func (x Xray) probeLatencyIsolated(n Node) (time.Duration, error) {
 	ready := false
 	for i := 0; i < 50; i++ {
 		select {
+		case <-ctx.Done():
+			return 0, ctx.Err()
 		case <-probe.done:
 			return 0, probe.unexpectedExit("isolated candidate probe exited at startup")
 		default:
@@ -345,7 +354,11 @@ func (x Xray) probeLatencyIsolated(n Node) (time.Duration, error) {
 			ready = true
 			break
 		}
-		time.Sleep(100 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+		}
 	}
 	if !ready {
 		return 0, errors.New("isolated probe port did not become ready")

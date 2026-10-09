@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestStatusReportRequiresSession(t *testing.T) {
@@ -136,16 +137,42 @@ func TestBootLoaderCheckDoesNotClaimItRanAfterReboot(t *testing.T) {
 	if err := os.Chmod(path, 0700); err != nil {
 		t.Fatal(err)
 	}
-	if got := bootLoaderCheck(path); got.State != "ok" || !strings.Contains(got.Detail, "не проверено") {
+	if got := bootLoaderCheck(path); got.State != "info" || !strings.Contains(got.Detail, "не подтверждено") {
 		t.Fatalf("executable loader should state verification limit: %+v", got)
 	}
 }
 
 func TestStatusReportTextContainsChecklist(t *testing.T) {
-	report := statusReport{Checks: []statusCheck{newStatusCheck("lan-tcp", "Перехват LAN", "IPv4 TCP", "ok", "Правило найдено")}}
+	report := statusReport{GeneratedAt: time.Date(2026, 10, 9, 0, 0, 0, 0, time.UTC), CompletedAt: time.Date(2026, 10, 9, 0, 0, 1, 0, time.UTC), DurationMS: 1000, Checks: []statusCheck{newStatusCheck("lan-tcp", "Перехват LAN", "IPv4 TCP", "ok", "Правило найдено")}}
 	report.finish()
 	if !strings.Contains(report.Text, "=== Чек-лист ===") || !strings.Contains(report.Text, "[OK] Перехват LAN / IPv4 TCP") {
 		t.Fatalf("checklist missing in text export: %q", report.Text)
+	}
+	if !strings.Contains(report.Text, "сбор: 1000 мс; неполный: false") {
+		t.Fatalf("collection metadata missing: %q", report.Text)
+	}
+}
+
+func TestStatusSnapshotFreshnessControlsAPIResult(t *testing.T) {
+	now := time.Date(2026, 10, 9, 0, 0, 0, 0, time.UTC)
+	status := map[string]any{"api_checked_at": now.Add(-30 * time.Second), "api_reachable": true}
+	if fresh, _ := statusSnapshotFresh(status, now); !fresh || boolHealthCheck(status, "api_reachable", "api", "API", fresh).State != "ok" {
+		t.Fatal("fresh API result should pass")
+	}
+	status["api_checked_at"] = now.Add(-2 * time.Minute)
+	if fresh, _ := statusSnapshotFresh(status, now); fresh || boolHealthCheck(status, "api_reachable", "api", "API", fresh).State != "unknown" {
+		t.Fatal("stale API result must not be shown as healthy")
+	}
+}
+
+func TestHybridLANReadyRequiresBothPaths(t *testing.T) {
+	lan := lanInterceptionStatus{TCP: lanInterceptionPath{Known: true, Present: true}, UDP: lanInterceptionPath{Known: true, Present: true}}
+	if !hybridLANReady(lan) {
+		t.Fatal("complete Hybrid paths rejected")
+	}
+	lan.UDP.Present = false
+	if hybridLANReady(lan) {
+		t.Fatal("missing TPROXY path accepted")
 	}
 }
 

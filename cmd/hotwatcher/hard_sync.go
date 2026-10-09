@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	hw "local/xkeen-hot-watcher/internal/hotwatcher"
@@ -44,6 +45,33 @@ func waitXrayReady(engine *hw.Engine, timeout time.Duration, serverRunning func(
 		}
 		if time.Now().After(deadline) {
 			return fmt.Errorf("XKeen запущен, но %s Xray недоступен; подписка сохранена для просмотра через keys, применение отложено", lastStage)
+		}
+		time.Sleep(time.Second)
+	}
+}
+
+func hybridLANReady(lan lanInterceptionStatus) bool {
+	return lan.TCP.Known && lan.TCP.Present && lan.UDP.Known && lan.UDP.Present
+}
+
+// A healthy Xray API does not mean LAN packets reach its transparent inputs.
+// Validate the installed XKeen chains after starting Hybrid, without writing
+// firewall rules or changing the current key.
+func waitHybridLANReady(configDir string, timeout time.Duration) error {
+	if xkeenHookSettings(xkeenNetfilterHook)["mode_proxy"] != "Hybrid" {
+		return nil
+	}
+	deadline := time.Now().Add(timeout)
+	var last lanInterceptionStatus
+	for {
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		last = readLANInterception(ctx, configDir)
+		cancel()
+		if hybridLANReady(last) {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("Xray API доступен, но перехват LAN после запуска XKeen не подтверждён (TCP: %s; UDP: %s); проверьте модули Netfilter и хук XKeen", last.TCP.Missing, last.UDP.Missing)
 		}
 		time.Sleep(time.Second)
 	}
@@ -177,6 +205,9 @@ func hardSync(c hw.Config, engine *hw.Engine) (err error) {
 			fmt.Println("Ожидаю API списка узлов и балансировщика после запуска XKeen…")
 			readyErr := waitXrayReady(engine, 60*time.Second, serverRunning)
 			if readyErr == nil {
+				readyErr = waitHybridLANReady(c.ConfigDir, 12*time.Second)
+			}
+			if readyErr == nil {
 				if startErr != nil {
 					fmt.Println("XKeen сообщил об ошибке запуска, но оба API Xray доступны.")
 				}
@@ -230,6 +261,9 @@ func hardSync(c hw.Config, engine *hw.Engine) (err error) {
 		engine.VerifiedLatencies = verified
 		defer func() { engine.VerifiedLatencies = nil }()
 		syncErr = engine.SyncPrepared(prepared)
+		if syncErr == nil {
+			syncErr = waitHybridLANReady(c.ConfigDir, 12*time.Second)
+		}
 		hw.WriteLastCheck(c, syncErr == nil)
 		if syncErr == nil {
 			fmt.Println("Подписка применена. XKeen снова запущен.")
