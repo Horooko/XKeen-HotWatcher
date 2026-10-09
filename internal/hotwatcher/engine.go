@@ -245,6 +245,24 @@ func (e *Engine) sync(adopt bool, prepared *Parsed) error {
 		if er = e.reconcile(s, tags); er != nil {
 			return er
 		}
+		// Names are metadata: a provider can rename an unchanged outbound.
+		// Keep the running Xray and generated fragment intact, but persist the
+		// latest labels so status/CLI do not fall back to stale state names.
+		renamed := 0
+		for _, node := range nodes {
+			if old, ok := findNode(s.Active, node.Tag); ok && old.Name != node.Name {
+				renamed++
+			}
+		}
+		if renamed > 0 {
+			updated := *s
+			updated.Active = nodes
+			if er = atomicWrite(e.statePath(), encode(updated), 0600); er != nil {
+				return er
+			}
+			s = &updated
+			e.event("names_updated", map[string]any{"renamed_nodes": renamed})
+		}
 		if s.SelectionMode != "manual" && (e.C.SelectionPolicy == "latency" || e.VerifiedLatencies != nil) {
 			selected, probeErr := e.fastest(nodes, s.Selected, s.SelectedAt)
 			if probeErr != nil {

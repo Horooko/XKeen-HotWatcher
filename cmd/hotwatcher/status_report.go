@@ -325,7 +325,10 @@ func (w *webUI) generateStatusReport(ctx context.Context) statusReport {
 	}
 	lan := readLANInterception(ctx, w.config.ConfigDir)
 	report.Checks = buildStatusChecks(ctx, w.config, status, statusErr, lan)
+	dnsPathChecks, dnsPathLines := dnsPathDiagnostics(ctx)
+	report.Checks = append(report.Checks, dnsPathChecks...)
 	report.Checks = append(report.Checks, operationCheck, recoveryCheck, dnsCheck)
+	report.add("DNS LAN: служба и путь UDP/53", dnsPathLines...)
 	lanLines := make([]string, 0, 4)
 	for _, item := range []struct {
 		name string

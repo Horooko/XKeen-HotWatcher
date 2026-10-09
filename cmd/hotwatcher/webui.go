@@ -785,8 +785,34 @@ func (w *webUI) runAction(id uint64, action, tag string, providers []string, aut
 			case "url-migrate":
 				return w.config.MigrateSubscriptionURL()
 			case "sync":
+				before, _ := w.engine.KeysSnapshot()
 				err := w.engine.Sync(false)
 				hw.WriteLastCheck(w.config, err == nil)
+				if err == nil {
+					after, snapshotErr := w.engine.KeysSnapshot()
+					if snapshotErr == nil {
+						previousNames := make(map[string]string, len(before.Keys))
+						for _, key := range before.Keys {
+							previousNames[key.Tag] = key.Name
+						}
+						fetched, applied, emergency, renamed := 0, 0, 0, 0
+						for _, key := range after.Keys {
+							if key.Latest {
+								fetched++
+							}
+							if key.Applied {
+								applied++
+							}
+							if key.Emergency {
+								emergency++
+							}
+							if previous, ok := previousNames[key.Tag]; ok && previous != key.Name {
+								renamed++
+							}
+						}
+						result = map[string]any{"fetched_nodes": fetched, "applied_nodes": applied, "emergency_nodes": emergency, "renamed_nodes": renamed, "fetched_at": after.FetchedAt}
+					}
+				}
 				return err
 			case "check-key":
 				_, err := w.engine.CheckKey()
