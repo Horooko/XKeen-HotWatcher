@@ -27,6 +27,9 @@ type reportSection struct {
 
 type statusReport struct {
 	GeneratedAt time.Time       `json:"generated_at"`
+	CompletedAt time.Time       `json:"completed_at"`
+	DurationMS  int64           `json:"duration_ms"`
+	Partial     bool            `json:"partial"`
 	Checks      []statusCheck   `json:"checks"`
 	Sections    []reportSection `json:"sections"`
 	Text        string          `json:"text"`
@@ -78,6 +81,7 @@ func (r *statusReport) add(title string, lines ...string) {
 func (r *statusReport) finish() {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Hot Watcher — диагностический отчёт\nДата UTC: %s\n", r.GeneratedAt.Format(time.RFC3339))
+	fmt.Fprintf(&b, "Завершён UTC: %s; сбор: %d мс; неполный: %v\n", r.CompletedAt.Format(time.RFC3339), r.DurationMS, r.Partial)
 	if len(r.Checks) > 0 {
 		b.WriteString("\n=== Чек-лист ===\n")
 		for _, check := range r.Checks {
@@ -325,6 +329,7 @@ func (w *webUI) generateStatusReport(ctx context.Context) statusReport {
 	}
 	lan := readLANInterception(ctx, w.config.ConfigDir)
 	report.Checks = buildStatusChecks(ctx, w.config, status, statusErr, lan)
+	report.Checks = append(report.Checks, newStatusCheck("lan-client-scope", "Перехват LAN", "Доступ с отдельного устройства", "unknown", "Проверки на роутере не подтверждают открытие сайта с ПК или телефона; нужны запрос клиента без локального VPN и сравнение счётчиков"))
 	dnsPathChecks, dnsPathLines := dnsPathDiagnostics(ctx)
 	report.Checks = append(report.Checks, dnsPathChecks...)
 	report.Checks = append(report.Checks, operationCheck, recoveryCheck, dnsCheck)
@@ -350,12 +355,19 @@ func (w *webUI) generateStatusReport(ctx context.Context) statusReport {
 		routeLines = append(routeLines, fixedReadCommand(ctx, ipBinary, "-4", "rule", "show")...)
 		routeLines = append(routeLines, "IPv4 routes:")
 		routeLines = append(routeLines, fixedReadCommand(ctx, ipBinary, "-4", "route", "show")...)
-		routeLines = append(routeLines, "IPv4 table 111 (fwmark 0x111):")
-		routeLines = append(routeLines, fixedReadCommand(ctx, ipBinary, "-4", "route", "show", "table", "111")...)
+		routing := xkeenHookSettings(xkeenNetfilterHook)
+		if tableID, mark := routing["table_id"], routing["table_mark"]; tableID != "" && mark != "" {
+			routeLines = append(routeLines, fmt.Sprintf("IPv4 table %s (fwmark %s):", tableID, mark))
+			routeLines = append(routeLines, fixedReadCommand(ctx, ipBinary, "-4", "route", "show", "table", tableID)...)
+		} else {
+			routeLines = append(routeLines, "Таблица и метка TPROXY не найдены в хуке XKeen")
+		}
 		routeLines = append(routeLines, "IPv6 rules:")
 		routeLines = append(routeLines, fixedReadCommand(ctx, ipBinary, "-6", "rule", "show")...)
-		routeLines = append(routeLines, "IPv6 table 111 (fwmark 0x111):")
-		routeLines = append(routeLines, fixedReadCommand(ctx, ipBinary, "-6", "route", "show", "table", "111")...)
+		if tableID, mark := routing["table_id"], routing["table_mark"]; tableID != "" && mark != "" {
+			routeLines = append(routeLines, fmt.Sprintf("IPv6 table %s (fwmark %s):", tableID, mark))
+			routeLines = append(routeLines, fixedReadCommand(ctx, ipBinary, "-6", "route", "show", "table", tableID)...)
+		}
 		report.add("Политика маршрутизации", routeLines...)
 	}
 	report.add("Процессы /proc", reportProcesses("/proc", w.config.XrayBinary, w.config.ConfigDir, w.config.StateDir)...)
@@ -378,7 +390,7 @@ func (w *webUI) generateStatusReport(ctx context.Context) statusReport {
 	} else {
 		report.add("Последний URL Test", "Нет сохранённого результата")
 	}
-	if latency, err := w.engine.SelectedIsolatedHTTPSProbe(); err == nil {
+	if latency, err := w.engine.SelectedIsolatedHTTPSProbeContext(ctx); err == nil {
 		report.add("Выбранный ключ", fmt.Sprintf("HTTPS-проба через отдельный временный Xray: %d мс", latency.Milliseconds()), "Проверка не измеряет ICMP ping и не подтверждает маршрут с ПК через LAN.")
 		report.Checks = append(report.Checks, newStatusCheck("selected-probe", "Xray и ключ", "Проба выбранного ключа", "info", fmt.Sprintf("Отдельный Xray: %d мс; не подтверждает маршрут клиента LAN", latency.Milliseconds())))
 	} else {
@@ -407,6 +419,12 @@ func (w *webUI) generateStatusReport(ctx context.Context) statusReport {
 	}
 	report.add("Журнал запуска XKeen", boundedReportLog("/opt/var/log/xkeen-detached.log")...)
 	report.add("Журнал Hot Watcher", boundedReportLog(filepath.Join(w.config.StateDir, "events.jsonl"))...)
+	report.CompletedAt = time.Now().UTC()
+	report.DurationMS = report.CompletedAt.Sub(report.GeneratedAt).Milliseconds()
+	report.Partial = ctx.Err() != nil
+	if report.Partial {
+		report.Checks = append(report.Checks, newStatusCheck("report-budget", "Отчёт", "Полнота сбора", "unknown", "Лимит времени или соединение прервали сбор; часть проверок могла не выполниться"))
+	}
 	report.finish()
 	return report
 }

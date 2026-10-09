@@ -59,7 +59,19 @@ func moduleCheck(procModules string, moduleDirectories, names []string) (filesMi
 	return filesMissing, notLoaded, true
 }
 
-func boolHealthCheck(status map[string]any, key, id, title string) statusCheck {
+func statusSnapshotFresh(status map[string]any, now time.Time) (bool, time.Duration) {
+	checked, ok := status["api_checked_at"].(time.Time)
+	if !ok || checked.IsZero() {
+		return false, 0
+	}
+	age := now.Sub(checked)
+	return age >= 0 && age <= 90*time.Second, age
+}
+
+func boolHealthCheck(status map[string]any, key, id, title string, fresh bool) statusCheck {
+	if !fresh {
+		return newStatusCheck(id, "Xray и ключ", title, "unknown", "Фоновый снимок старше 90 секунд или время проверки неизвестно")
+	}
 	value, ok := status[key].(bool)
 	if !ok {
 		return newStatusCheck(id, "Xray и ключ", title, "unknown", "Последний снимок состояния не содержит результата")
@@ -91,7 +103,7 @@ func bootLoaderCheck(path string) statusCheck {
 	if info.Mode().Perm()&0111 == 0 {
 		return newStatusCheck("boot-loader", "Ядро и запуск", "Загрузка модулей до XKeen", "issue", "S04xkeen-netfilter-modules существует, но не является исполняемым")
 	}
-	return newStatusCheck("boot-loader", "Ядро и запуск", "Загрузка модулей до XKeen", "ok", "S04 загрузит модули перед S05xkeen; выполнение после перезагрузки ещё не проверено")
+	return newStatusCheck("boot-loader", "Ядро и запуск", "Загрузка модулей до XKeen", "info", "S04 установлен и исполняем; выполнение после перезагрузки не подтверждено. Текущая загрузка модулей проверяется отдельно")
 }
 
 func netfilterComponentState(output string) string {
@@ -226,9 +238,16 @@ func buildStatusChecks(ctx context.Context, config hw.Config, status map[string]
 		add(newStatusCheck("xray-process", "Xray и ключ", "Основной процесс Xray", "issue", "Не удалось подтвердить ровно один основной xray run"))
 	}
 	if statusErr == nil && status != nil {
-		add(boolHealthCheck(status, "api_reachable", "xray-api", "API Xray"))
-		add(boolHealthCheck(status, "selected_present", "selected-outbound", "Выбранный ключ присутствует"))
+		fresh, age := statusSnapshotFresh(status, time.Now().UTC())
+		if fresh {
+			add(newStatusCheck("status-freshness", "Xray и ключ", "Свежесть фонового снимка", "ok", fmt.Sprintf("Проверка API выполнена %d сек назад", int64(age.Seconds()))))
+		} else {
+			add(newStatusCheck("status-freshness", "Xray и ключ", "Свежесть фонового снимка", "unknown", "Последняя проверка старше 90 секунд или её время неизвестно"))
+		}
+		add(boolHealthCheck(status, "api_reachable", "xray-api", "API Xray", fresh))
+		add(boolHealthCheck(status, "selected_present", "selected-outbound", "Выбранный ключ присутствует", fresh))
 	} else {
+		add(newStatusCheck("status-freshness", "Xray и ключ", "Свежесть фонового снимка", "unknown", "Фоновый снимок состояния недоступен"))
 		add(newStatusCheck("xray-api", "Xray и ключ", "API Xray", "unknown", "Снимок состояния Hot Watcher недоступен"))
 		add(newStatusCheck("selected-outbound", "Xray и ключ", "Выбранный ключ присутствует", "unknown", "Снимок состояния Hot Watcher недоступен"))
 	}

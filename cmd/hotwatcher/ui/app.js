@@ -211,7 +211,8 @@
     const details = $("statusReportDetails");
     details.hidden = !sections.children.length;
     details.open = !checks.length;
-    text("statusReportState", "Собран " + dateLabel(report.generated_at) + " · " + checks.length + " проверок · " + sections.children.length + " разделов. Снимок не обновляется автоматически.");
+    const duration = Number.isFinite(report.duration_ms) ? ` · ${Math.round(report.duration_ms / 1000)} с` : "";
+    text("statusReportState", "Собран " + dateLabel(report.generated_at) + " · " + checks.length + " проверок · " + sections.children.length + " разделов" + duration + (report.partial ? " · Отчёт неполный" : "") + ". Снимок не обновляется автоматически.");
     $("statusReportActions").hidden = false;
   }
   async function generateStatusReport() {

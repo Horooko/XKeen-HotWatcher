@@ -54,6 +54,7 @@ type webUI struct {
 	token    string
 	hosts    map[string]bool
 	mu       sync.Mutex
+	reportMu sync.Mutex
 	sessions map[string]webSession
 	job      webJob
 	health   *dashboardHealth
@@ -423,7 +424,14 @@ func (w *webUI) handler() http.Handler {
 			return
 		}
 		out.Header().Set("Cache-Control", "no-store")
-		jsonResponse(out, 200, w.generateStatusReport(r.Context()))
+		if !w.reportMu.TryLock() {
+			apiError(out, 409, "диагностический отчёт уже собирается")
+			return
+		}
+		defer w.reportMu.Unlock()
+		ctx, cancel := context.WithTimeout(r.Context(), 70*time.Second)
+		defer cancel()
+		jsonResponse(out, 200, w.generateStatusReport(ctx))
 	})
 	mux.HandleFunc("GET /api/update", func(out http.ResponseWriter, r *http.Request) {
 		if _, ok := w.session(r); !ok {

@@ -1,11 +1,49 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestDNSUDPSocketsTruncationIsUnknown(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "udp")
+	row := "  1: 00000000:0035 00000000:0000 07 00000000:00000000 00:00000000 00000000 0 0 123 2 0000000000000000 0\n"
+	if err := os.WriteFile(file, []byte(strings.Repeat(row, 8193)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if got := readDNSUDPSockets(file, 53); got.Known {
+		t.Fatalf("truncated /proc/net/udp must be unknown: %+v", got)
+	}
+}
+
+func TestDNSFailureKindDoesNotExposeRawError(t *testing.T) {
+	if got := dnsFailureKind(context.DeadlineExceeded); got != "истекло время ожидания" {
+		t.Fatalf("unexpected classification: %q", got)
+	}
+}
+
+func TestDNSChainSummaryContainsOnlyCounts(t *testing.T) {
+	rules := "[2:100] -A OUTPUT -p udp -m udp --dport 53 -j REDIRECT --to-ports 41100\n" +
+		"[1:50] -A OUTPUT -j xkeen\n" +
+		"[3:150] -A INPUT -p udp -m udp --dport 53 -j DROP\n"
+	got := summarizeDNSChain(rules, "OUTPUT")
+	if got.Rules != 2 || got.Port53 != 1 || got.Redirects != 1 || got.XKeen != 1 || got.Drops != 0 {
+		t.Fatalf("unexpected DNS chain summary: %+v", got)
+	}
+}
+
+func TestResolverNameserverCountDoesNotExportAddresses(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "resolv.conf")
+	if err := os.WriteFile(file, []byte("nameserver 203.0.113.4\nsearch secret.example\nnameserver 198.51.100.8\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if count, ok := resolverNameserverCount(file); !ok || count != 2 {
+		t.Fatalf("unexpected resolver count: %d, known=%v", count, ok)
+	}
+}
 
 func TestDNSFirewallDistinguishesEarlyBypassFromOldException(t *testing.T) {
 	mangle := strings.Join([]string{

@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -12,6 +13,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -60,9 +62,15 @@ func readDNSUDPSockets(path string, port int) dnsUDPSockets {
 		return dnsUDPSockets{}
 	}
 	defer f.Close()
-	result := dnsUDPSockets{Known: true}
-	scanner := bufio.NewScanner(io.LimitReader(f, 1024*1024))
-	for rows := 0; scanner.Scan() && rows < 8192; rows++ {
+	result := dnsUDPSockets{}
+	limited := &io.LimitedReader{R: f, N: 1024*1024 + 1}
+	scanner := bufio.NewScanner(limited)
+	rows := 0
+	for scanner.Scan() {
+		rows++
+		if rows > 8192 {
+			return result
+		}
 		fields := strings.Fields(scanner.Text())
 		if len(fields) < 5 {
 			continue
@@ -83,8 +91,84 @@ func readDNSUDPSockets(path string, port int) dnsUDPSockets {
 			}
 		}
 	}
-	result.Known = scanner.Err() == nil
+	result.Known = scanner.Err() == nil && limited.N > 0
 	return result
+}
+
+func dnsFailureKind(err error) string {
+	if err == nil {
+		return "нет ошибки"
+	}
+	var netErr net.Error
+	switch {
+	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, os.ErrDeadlineExceeded):
+		return "истекло время ожидания"
+	case errors.As(err, &netErr) && netErr.Timeout():
+		return "истекло время ожидания"
+	case errors.Is(err, syscall.ECONNREFUSED):
+		return "соединение отклонено"
+	case strings.Contains(err.Error(), "invalid DNS reply"):
+		return "ответ DNS некорректен"
+	default:
+		return "сетевая ошибка или нет ответа"
+	}
+}
+
+type dnsChainSummary struct {
+	Rules     int
+	Port53    int
+	Redirects int
+	Drops     int
+	Accepts   int
+	XKeen     int
+}
+
+func summarizeDNSChain(rules, chain string) dnsChainSummary {
+	var result dnsChainSummary
+	for _, line := range strings.Split(rules, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) > 0 && strings.HasPrefix(fields[0], "[") {
+			fields = fields[1:]
+		}
+		if len(fields) < 4 || fields[0] != "-A" || fields[1] != chain {
+			continue
+		}
+		result.Rules++
+		if ruleArg(fields, "--dport") == "53" || ruleArg(fields, "--sport") == "53" {
+			result.Port53++
+		}
+		switch ruleArg(fields, "-j") {
+		case "REDIRECT":
+			result.Redirects++
+		case "DROP", "REJECT":
+			result.Drops++
+		case "ACCEPT":
+			result.Accepts++
+		case "xkeen", "xkeen_force":
+			result.XKeen++
+		}
+	}
+	return result
+}
+
+func resolverNameserverCount(path string) (int, bool) {
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Size() > 64*1024 {
+		return 0, false
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, false
+	}
+	defer f.Close()
+	count := 0
+	scanner := bufio.NewScanner(io.LimitReader(f, 64*1024))
+	for scanner.Scan() {
+		if fields := strings.Fields(scanner.Text()); len(fields) >= 2 && fields[0] == "nameserver" {
+			count++
+		}
+	}
+	return count, scanner.Err() == nil
 }
 
 func parseDNSFirewall(mangle, nat string) dnsFirewallPath {
@@ -283,6 +367,27 @@ func dnsPathDiagnostics(ctx context.Context) ([]statusCheck, []string) {
 		natErr = fmt.Errorf("unavailable")
 	}
 	path := parseDNSFirewall(mangle, nat)
+	if mangleErr == nil && natErr == nil {
+		for _, item := range []struct{ table, chain, rules string }{{"nat", "OUTPUT", nat}, {"mangle", "OUTPUT", mangle}} {
+			summary := summarizeDNSChain(item.rules, item.chain)
+			lines = append(lines, fmt.Sprintf("%s %s: правил=%d; порт 53=%d; REDIRECT=%d; DROP/REJECT=%d; переходов в XKeen=%d", item.table, item.chain, summary.Rules, summary.Port53, summary.Redirects, summary.Drops, summary.XKeen))
+		}
+	}
+	if iptablesSave != "" {
+		if filter, err := readIPTablesSave(ctx, iptablesSave, "filter"); err == nil {
+			summary := summarizeDNSChain(filter, "INPUT")
+			lines = append(lines, fmt.Sprintf("filter INPUT: правил=%d; порт 53=%d; ACCEPT=%d; DROP/REJECT=%d", summary.Rules, summary.Port53, summary.Accepts, summary.Drops))
+		} else {
+			lines = append(lines, "filter INPUT: таблица недоступна")
+		}
+	}
+	for _, path := range []string{"/etc/resolv.conf", "/opt/etc/resolv.conf"} {
+		if count, ok := resolverNameserverCount(path); ok {
+			lines = append(lines, fmt.Sprintf("%s: nameserver=%d (адреса скрыты)", path, count))
+		} else {
+			lines = append(lines, path+": список DNS недоступен или перенаправлен")
+		}
+	}
 	if mangleErr != nil {
 		checks = append(checks, newStatusCheck("dns-firewall-path", "DNS LAN", "Путь UDP/53 через firewall", "unknown", "Таблица mangle недоступна"))
 		lines = append(lines, "Таблица mangle: недоступна")
@@ -333,8 +438,9 @@ func dnsPathDiagnostics(ctx context.Context) ([]statusCheck, []string) {
 		checks = append(checks, newStatusCheck("dns-loopback", "DNS LAN", "DNS роутера через loopback", "ok", fmt.Sprintf("UDP-ответ получен за %d мс", loopLatency.Milliseconds())))
 		lines = append(lines, fmt.Sprintf("Локальный запрос UDP/53 через loopback: OK, %d мс", loopLatency.Milliseconds()))
 	} else {
-		checks = append(checks, newStatusCheck("dns-loopback", "DNS LAN", "DNS роутера через loopback", "issue", "UDP-запрос не получил корректный ответ за 2 секунды"))
-		lines = append(lines, "Локальный запрос UDP/53 через loopback: неуспешен или превысил 2 секунды")
+		kind := dnsFailureKind(loopErr)
+		checks = append(checks, newStatusCheck("dns-loopback", "DNS LAN", "DNS роутера через loopback", "issue", "UDP/53: "+kind))
+		lines = append(lines, "Локальный запрос UDP/53 через loopback: "+kind)
 	}
 	lanIP, interfaceName := routerLANIPv4()
 	if lanIP == nil {
@@ -342,13 +448,18 @@ func dnsPathDiagnostics(ctx context.Context) ([]statusCheck, []string) {
 		lines = append(lines, "Основной мост br0: IPv4-адрес не найден")
 	} else {
 		udpLatency, udpErr := queryRouterDNS(ctx, lanIP.String(), "udp4")
-		lines = append(lines, fmt.Sprintf("Основной мост %s: локальный запрос UDP/53=%v; длительность=%d мс", interfaceName, udpErr == nil, udpLatency.Milliseconds()))
+		lines = append(lines, fmt.Sprintf("Основной мост %s: локальный запрос UDP/53=%v; длительность=%d мс; причина=%s", interfaceName, udpErr == nil, udpLatency.Milliseconds(), dnsFailureKind(udpErr)))
+		tcpLatency, tcpErr := queryRouterDNS(ctx, lanIP.String(), "tcp4")
+		lines = append(lines, fmt.Sprintf("Тот же запрос TCP/53: успешен=%v; длительность=%d мс; причина=%s", tcpErr == nil, tcpLatency.Milliseconds(), dnsFailureKind(tcpErr)))
 		if udpErr == nil {
 			checks = append(checks, newStatusCheck("dns-lan-udp", "DNS LAN", "DNS к адресу LAN с роутера", "ok", fmt.Sprintf("UDP-ответ через %s получен за %d мс; клиентский PREROUTING не проверен", interfaceName, udpLatency.Milliseconds())))
+			if tcpErr == nil {
+				checks = append(checks, newStatusCheck("dns-lan-tcp", "DNS LAN", "Контрольный DNS через TCP", "info", fmt.Sprintf("TCP-ответ через %s получен за %d мс; клиентский PREROUTING не проверен", interfaceName, tcpLatency.Milliseconds())))
+			} else {
+				checks = append(checks, newStatusCheck("dns-lan-tcp", "DNS LAN", "Контрольный DNS через TCP", "info", "UDP/53 отвечает; TCP/53: "+dnsFailureKind(tcpErr)))
+			}
 		} else {
-			checks = append(checks, newStatusCheck("dns-lan-udp", "DNS LAN", "DNS к адресу LAN с роутера", "issue", "UDP-запрос к адресу br0 не получил ответ; проверьте перехват и службу DNS Keenetic"))
-			tcpLatency, tcpErr := queryRouterDNS(ctx, lanIP.String(), "tcp4")
-			lines = append(lines, fmt.Sprintf("Тот же запрос TCP/53: успешен=%v; длительность=%d мс", tcpErr == nil, tcpLatency.Milliseconds()))
+			checks = append(checks, newStatusCheck("dns-lan-udp", "DNS LAN", "DNS к адресу LAN с роутера", "issue", "UDP/53: "+dnsFailureKind(udpErr)+"; проверьте перехват и службу DNS Keenetic"))
 			if tcpErr == nil {
 				checks = append(checks, newStatusCheck("dns-lan-tcp", "DNS LAN", "Контрольный DNS через TCP", "info", "TCP/53 отвечает при отказе UDP/53; проблема в UDP-пути или службе"))
 			} else {

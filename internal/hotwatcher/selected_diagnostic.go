@@ -1,6 +1,7 @@
 package hotwatcher
 
 import (
+	"context"
 	"errors"
 	"time"
 )
@@ -9,6 +10,12 @@ import (
 // short-lived loopback Xray. It neither changes the running Xray nor installs
 // routing rules, and deliberately ignores economy/live-probe mode.
 func (e *Engine) SelectedIsolatedHTTPSProbe() (time.Duration, error) {
+	return e.SelectedIsolatedHTTPSProbeContext(context.Background())
+}
+
+// SelectedIsolatedHTTPSProbeContext lets an HTTP report cancel the temporary
+// Xray immediately when its collection budget or client connection ends.
+func (e *Engine) SelectedIsolatedHTTPSProbeContext(ctx context.Context) (time.Duration, error) {
 	s, err := e.state()
 	if err != nil {
 		return 0, err
@@ -27,5 +34,5 @@ func (e *Engine) SelectedIsolatedHTTPSProbe() (time.Duration, error) {
 	if len(c.ProbeURLs) > 2 {
 		c.ProbeURLs = c.ProbeURLs[:2]
 	}
-	return (Xray{C: c}).probeLatencyIsolated(node)
+	return (Xray{C: c}).probeLatencyIsolatedContext(ctx, node)
 }
